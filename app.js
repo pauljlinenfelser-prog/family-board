@@ -237,7 +237,7 @@ function weekStrip(events, open, today) {
   weekEvents = list.filter((x) => x.ev).map((x) => x.ev);
   let h = `<h2 class="row" style="justify-content:space-between">This week <span><a href="#" data-allev="1" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:600;margin-right:14px">See all</a><a href="#" data-addev="1" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:600">+ Add</a></span></h2><div class="card"><div class="week">` + days.map((d) => {
     const dots = [...new Set(list.filter((x) => x.day === d).map((x) => x.color))].slice(0, 3);
-    return `<div class="wday ${d === today ? "on" : ""}"><div class="sub">${new Date(d + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" })}</div>
+    return `<div class="wday ${d === today ? "on" : ""}" data-day="${d}" style="cursor:pointer"><div class="sub">${new Date(d + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" })}</div>
       <div class="wnum">${Number(d.slice(8))}</div><div class="wdots">${dots.map((c) => `<i style="background:${esc(c)}"></i>`).join("")}</div></div>`;
   }).join("") + `</div>`;
   h += list.length
@@ -306,6 +306,64 @@ function openEvent(e) {
     if (error) return ($("evErr").textContent = "Couldn't save: " + error.message);
     loadBoard();
   });
+}
+
+// ---------- month calendar (P22) ----------
+function addDaysISO(iso, n) { const d = new Date(iso + "T12:00:00"); d.setDate(d.getDate() + n); return localISO(d); }
+async function openMonth(monthIso, pickDay) {
+  const first = new Date(monthIso + "T12:00:00");
+  const gridStart = addDaysISO(monthIso, -first.getDay());
+  const gridEnd = addDaysISO(gridStart, 41);
+  const prev = localISO(new Date(first.getFullYear(), first.getMonth() - 1, 1, 12));
+  const next = localISO(new Date(first.getFullYear(), first.getMonth() + 1, 1, 12));
+  const today = localISO();
+  const sel = pickDay || (today.slice(0, 7) === monthIso.slice(0, 7) ? today : monthIso);
+  $("tab-board").innerHTML = `<div class="sub center" style="padding:30px">Loading the calendar…</div>`;
+  const [ev, bl] = await Promise.all([
+    db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes").lte("starts_at", gridEnd + "T23:59:59")
+      .or(`starts_at.gte.${gridStart},ends_at.gte.${gridStart}`).order("starts_at").limit(500),
+    db.from("bills").select("id,name,amount,due_date,paid,owner_id,logo_url").gte("due_date", gridStart).lte("due_date", gridEnd).order("due_date"),
+  ]);
+  const byDay = {};
+  const put = (d, kind, x) => ((byDay[d] ??= { ev: [], bl: [] })[kind].push(x));
+  for (const e of ev.data || []) {
+    let d = localISO(new Date(e.starts_at));
+    const end = e.ends_at ? localISO(new Date(e.ends_at)) : d;
+    for (let n = 0; d <= end && n < 62; n++, d = addDaysISO(d, 1)) put(d, "ev", e);
+  }
+  for (const b of bl.data || []) put(b.due_date, "bl", b);
+  weekEvents = ev.data || [];
+
+  const title = first.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  let h = `<div class="row" style="justify-content:space-between;margin-top:10px">
+      <button class="btn ghost" data-mnav="${prev}" style="width:auto;min-height:40px;margin:0;padding:0 14px">‹</button>
+      <h2 style="margin:0">${esc(title)}</h2>
+      <button class="btn ghost" data-mnav="${next}" style="width:auto;min-height:40px;margin:0;padding:0 14px">›</button></div>
+    <div class="mcal">${["S", "M", "T", "W", "T", "F", "S"].map((x) => `<div class="mhead">${x}</div>`).join("")}`;
+  for (let i = 0; i < 42; i++) {
+    const d = addDaysISO(gridStart, i);
+    const it = byDay[d] || { ev: [], bl: [] };
+    const dots = [...new Set(it.ev.map((e) => people[e.member_id]?.color ?? "#8A919E"))].slice(0, 3)
+      .map((c) => `<i style="background:${esc(c)}"></i>`).join("") + (it.bl.some((b) => !b.paid) ? `<i style="background:#F2C14E"></i>` : "");
+    h += `<div class="mday${d.slice(0, 7) !== monthIso.slice(0, 7) ? " out" : ""}${d === today ? " today" : ""}${d === sel ? " sel" : ""}" data-day="${d}">
+      <div>${Number(d.slice(8))}</div><div class="wdots">${dots}</div></div>`;
+  }
+  h += `</div>`;
+
+  // the picked day
+  const it = byDay[sel] || { ev: [], bl: [] };
+  h += `<h2 class="row" style="justify-content:space-between">${esc(fmtDate(sel))} <a href="#" data-addon="${sel}" class="hlink">+ Add</a></h2><div class="card">`;
+  h += it.ev.length ? it.ev.map((e) => {
+    const p = people[e.member_id];
+    const time = e.all_day ? "All day" : new Date(e.starts_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    return `<div class="wev" ${canEditEvent(e) ? `data-ev="${e.id}" style="cursor:pointer"` : ""}><i style="background:${esc(p?.color ?? "#8A919E")}"></i>
+      <span class="sub" style="width:74px;margin:0">${esc(time)}</span><span>${esc(p?.display_name ?? "Someone")}${e.kind === "away" ? " away" : ""} · ${esc(e.title)}${e.notes ? `<span class="sub"> · ${esc(e.notes)}</span>` : ""}</span></div>`;
+  }).join("") : `<div class="sub">Nothing on the calendar.</div>`;
+  if (it.bl.length) h += it.bl.map((b) => `<div class="wev"><i style="background:${b.paid ? "#7D8594" : "#F2C14E"}"></i>
+      <span class="sub" style="width:74px;margin:0">${b.paid ? "Paid" : "Due"}</span><span>${esc(b.name)} · ${money(b.amount)}${b.owner_id ? ` <span class="sub">(${esc(people[b.owner_id]?.display_name ?? "personal")})</span>` : ""}</span></div>`).join("");
+  h += `</div><button class="btn ghost" id="calBack">Back to Home</button>`;
+  $("tab-board").innerHTML = h;
+  $("calBack").addEventListener("click", loadBoard);
 }
 
 async function openAllEvents() {
@@ -683,7 +741,12 @@ $("tab-board").addEventListener("click", async (e) => {
   if (e.target.closest("[data-allph]")) { e.preventDefault(); return openAllPhotos(); }
   const phBtn = e.target.closest("[data-ph]");
   if (phBtn) { const r = photoRows.find((x) => x.id === phBtn.dataset.ph); if (r) openPhoto(r); return; }
-  if (e.target.closest("[data-allev]")) { e.preventDefault(); return openAllEvents(); }
+  if (e.target.closest("[data-allev]")) { e.preventDefault(); return openMonth(localISO().slice(0, 8) + "01"); }
+  const dayCell = e.target.closest("[data-day]");
+  if (dayCell) { e.preventDefault(); return openMonth(dayCell.dataset.day.slice(0, 8) + "01", dayCell.dataset.day); }
+  const mNav = e.target.closest("[data-mnav]");
+  if (mNav) { e.preventDefault(); return openMonth(mNav.dataset.mnav); }
+  if (e.target.closest("[data-addon]")) { e.preventDefault(); const d = e.target.closest("[data-addon]").dataset.addon; return openEvent({ starts_at: new Date(d + "T12:00:00").toISOString() }); }
   const evRow = e.target.closest("[data-ev]");
   if (evRow) {
     const ev = weekEvents.find((x) => x.id === evRow.dataset.ev);
