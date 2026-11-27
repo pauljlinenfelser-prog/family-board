@@ -38,7 +38,7 @@ function showLogin() {
 async function start(user) {
   if (me?.id === user.id) return;
   me = user;
-  const { data: rows } = await db.from("members").select("id,display_name,color,role,cashtag,bill_manager").order("created_at");
+  const { data: rows } = await db.from("members").select("id,display_name,color,role,cashtag,bill_manager,avatar_path").order("created_at");
   people = Object.fromEntries((rows || []).map((r) => [r.id, r]));
   member = people[user.id];
   if (member?.role === "display") {
@@ -50,9 +50,8 @@ async function start(user) {
   $("app").classList.remove("hidden");
   $("hello").textContent = `Hi, ${member?.display_name ?? "there"}`;
   $("today").textContent = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
-  $("me").textContent = (member?.display_name ?? "?").slice(0, 1);
-  $("me").style.background = member?.color ?? "#8A919E";
-  $("meName").textContent = member?.display_name ?? "";
+  await paintAvatar($("me"), member);
+  fillProfile();
   $("meEmail").textContent = user.email;
   $("meRole").textContent = member?.role === "admin" ? "Admin" : member?.bill_manager ? "Bill manager" : "Family member";
   fillNoteTo();
@@ -174,6 +173,100 @@ async function loadNotes() {
     loadNotes();
   }));
 }
+
+// ---------- profile (P2) ----------
+const COLORS = ["#7FA8F9", "#E57FA8", "#A98BF5", "#5DC26A", "#F0A04B", "#4FC1B0", "#F2C14E", "#FF8A80"];
+let pickedColor = null;
+
+async function avatarUrl(path) {
+  if (!path) return null;
+  const { data } = await db.storage.from("family-photos").createSignedUrl(path, 3600);
+  return data?.signedUrl ?? null;
+}
+
+async function paintAvatar(el, m) {
+  el.textContent = (m?.display_name ?? "?").slice(0, 1);
+  el.style.backgroundColor = m?.color ?? "#8A919E";
+  const url = await avatarUrl(m?.avatar_path);
+  if (url) { el.style.backgroundImage = `url("${url}")`; el.classList.add("photo"); }
+  else { el.style.backgroundImage = ""; el.classList.remove("photo"); }
+}
+
+function fillProfile() {
+  $("profName").value = member?.display_name ?? "";
+  $("profCash").value = member?.cashtag ?? "";
+  pickedColor = member?.color ?? COLORS[0];
+  $("swatches").innerHTML = COLORS.map((c) => `<button class="sw${c.toLowerCase() === pickedColor.toLowerCase() ? " on" : ""}" style="background:${c}" data-c="${c}" aria-label="Color ${c}"></button>`).join("");
+  document.querySelectorAll(".sw").forEach((b) => b.addEventListener("click", () => {
+    pickedColor = b.dataset.c;
+    document.querySelectorAll(".sw").forEach((x) => x.classList.toggle("on", x === b));
+    $("bigAvatar").style.backgroundColor = pickedColor;
+  }));
+  $("removePhoto").classList.toggle("hidden", !member?.avatar_path);
+  paintAvatar($("bigAvatar"), member);
+}
+
+$("saveProfile").addEventListener("click", async () => {
+  $("profErr").textContent = "";
+  let cash = $("profCash").value.trim();
+  if (cash && !cash.startsWith("$")) cash = "$" + cash;
+  if (cash && !/^\$[A-Za-z][A-Za-z0-9_-]{0,19}$/.test(cash)) { $("profErr").textContent = "A $Cashtag starts with $ and a letter."; return; }
+  const name = $("profName").value.trim();
+  if (!name) { $("profErr").textContent = "Your name can't be empty."; return; }
+  const { error } = await db.from("members").update({ display_name: name, color: pickedColor, cashtag: cash || null }).eq("id", me.id);
+  if (error) { $("profErr").textContent = "Couldn't save: " + error.message; return; }
+  Object.assign(member, { display_name: name, color: pickedColor, cashtag: cash || null });
+  $("hello").textContent = `Hi, ${name}`;
+  paintAvatar($("me"), member);
+  $("profErr").style.color = "var(--paid)"; $("profErr").textContent = "Saved ✓";
+  setTimeout(() => { $("profErr").textContent = ""; $("profErr").style.color = ""; }, 2500);
+});
+
+// shrink any photo to a 320x320 square JPEG before upload
+function squareJpeg(file, size = 320) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const s = Math.min(img.naturalWidth, img.naturalHeight);
+      const c = document.createElement("canvas"); c.width = c.height = size;
+      c.getContext("2d").drawImage(img, (img.naturalWidth - s) / 2, (img.naturalHeight - s) / 2, s, s, 0, 0, size, size);
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error("Couldn't read that image"))), "image/jpeg", 0.86);
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = () => reject(new Error("Couldn't read that image"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+
+$("photoInput").addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  $("profErr").textContent = "Uploading…";
+  try {
+    const blob = await squareJpeg(file);
+    const path = `${me.id}/avatar-${Date.now()}.jpg`;
+    const up = await db.storage.from("family-photos").upload(path, blob, { contentType: "image/jpeg" });
+    if (up.error) throw up.error;
+    const old = member.avatar_path;
+    const { error } = await db.from("members").update({ avatar_path: path }).eq("id", me.id);
+    if (error) throw error;
+    if (old) await db.storage.from("family-photos").remove([old]);
+    member.avatar_path = path;
+    fillProfile(); paintAvatar($("me"), member);
+    $("profErr").textContent = "";
+  } catch (err) {
+    $("profErr").textContent = "Upload failed: " + (err.message || err);
+  }
+  e.target.value = "";
+});
+
+$("removePhoto").addEventListener("click", async () => {
+  const old = member.avatar_path;
+  await db.from("members").update({ avatar_path: null }).eq("id", me.id);
+  if (old) await db.storage.from("family-photos").remove([old]);
+  member.avatar_path = null;
+  fillProfile(); paintAvatar($("me"), member);
+});
 
 // ---------- installable app ----------
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");
