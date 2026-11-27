@@ -39,7 +39,7 @@ function showLogin() {
 async function start(user) {
   if (me?.id === user.id) return;
   me = user;
-  const { data: rows } = await db.from("members").select("id,display_name,color,role,cashtag,bill_manager,avatar_path,must_change_password").order("created_at");
+  const { data: rows } = await db.from("members").select("id,display_name,color,role,cashtag,bill_manager,avatar_path,must_change_password,phone").order("created_at");
   people = Object.fromEntries((rows || []).map((r) => [r.id, r]));
   member = people[user.id];
   if (member?.role === "display") {
@@ -728,6 +728,7 @@ async function paintAvatar(el, m) {
 function fillProfile() {
   $("profName").value = member?.display_name ?? "";
   $("profCash").value = member?.cashtag ?? "";
+  $("profPhone").value = member?.phone ?? "";
   pickedColor = member?.color ?? COLORS[0];
   $("swatches").innerHTML = COLORS.map((c) => `<button class="sw${c.toLowerCase() === pickedColor.toLowerCase() ? " on" : ""}" style="background:${c}" data-c="${c}" aria-label="Color ${c}"></button>`).join("");
   document.querySelectorAll(".sw").forEach((b) => b.addEventListener("click", () => {
@@ -746,9 +747,12 @@ $("saveProfile").addEventListener("click", async () => {
   if (cash && !/^\$[A-Za-z][A-Za-z0-9_-]{0,19}$/.test(cash)) { $("profErr").textContent = "A $Cashtag starts with $ and a letter."; return; }
   const name = $("profName").value.trim();
   if (!name) { $("profErr").textContent = "Your name can't be empty."; return; }
-  const { error } = await db.from("members").update({ display_name: name, color: pickedColor, cashtag: cash || null }).eq("id", me.id);
+  const digits = $("profPhone").value.replace(/\D/g, "");
+  if (digits && !(digits.length === 10 || (digits.length === 11 && digits[0] === "1"))) { $("profErr").textContent = "Enter a 10-digit cell number, like 989-555-0123."; return; }
+  const phone = digits ? "+1" + digits.slice(-10) : null;
+  const { error } = await db.from("members").update({ display_name: name, color: pickedColor, cashtag: cash || null, phone }).eq("id", me.id);
   if (error) { $("profErr").textContent = "Couldn't save: " + error.message; return; }
-  Object.assign(member, { display_name: name, color: pickedColor, cashtag: cash || null });
+  Object.assign(member, { display_name: name, color: pickedColor, cashtag: cash || null, phone });
   $("hello").textContent = `Hi, ${name}`;
   paintAvatar($("me"), member);
   $("profErr").style.color = "var(--paid)"; $("profErr").textContent = "Saved ✓";
@@ -974,6 +978,23 @@ $("logoResults").addEventListener("click", (e) => {
 });
 $("clearLogo").addEventListener("click", () => { logoUrl = null; paintLogo(); });
 
+// ---------- reminder texts (P17): opens the phone's own Messages app, ready to send ----------
+const APP_URL = "https://pauljlinenfelser-prog.github.io/family-board/";
+function shareAmount(bill, share, shares) {
+  const amt = Number(bill.amount || 0);
+  if (bill.split_method === "percent") return (amt * Number(share.percent || 0)) / 100;
+  if (bill.split_method === "fixed") return Number(share.fixed_amount || 0);
+  return shares.length ? amt / shares.length : amt;
+}
+function reminderText(personName, billName, amount, due) {
+  const pay = payee();
+  let t = `Hi ${personName}, reminder from the Family Board: your share of ${billName} is ${money(amount)}, ${daysUntil(due) < 0 ? "was due" : "due"} ${fmtDate(due)}.`;
+  const link = pay && pay.id === me.id ? cashAppLink(amount) : null;
+  if (link) t += ` Pay ${pay.display_name} with Cash App: ${link}`;
+  return t + ` ${APP_URL}`;
+}
+function smsLink(phone, text) { return `sms:${phone}?body=${encodeURIComponent(text)}`; }
+
 // ---------- who has paid their share (P9): the admin can mark each person ----------
 function drawWhoPaid(shares) {
   const saved = shares.filter((s) => s.id && people[s.member_id]);
@@ -984,8 +1005,13 @@ function drawWhoPaid(shares) {
   $("whoPaid").innerHTML = saved.map((s) => {
     const p = people[s.member_id];
     const cur = s.paid ? s.paid_method ?? "other" : "";
-    const note = s.paid && !s.confirmed
+    let note = s.paid && !s.confirmed
       ? `<div class="sub soon" style="grid-column:1/-1">Marked paid by ${esc(p.display_name)} — <a href="#" data-okshare="${s.id}">confirm ✓</a></div>` : "";
+    if (!s.paid && p.id !== me.id && editing?.id) {
+      note += p.phone
+        ? `<div style="grid-column:1/-1"><a class="chip" style="display:inline-block;margin-top:2px;color:var(--accent)" href="${esc(smsLink(p.phone, reminderText(p.display_name, editing.name, shareAmount(editing, s, saved), editing.due_date)))}">💬 Text ${esc(p.display_name)} a reminder</a></div>`
+        : `<div class="sub" style="grid-column:1/-1">${esc(p.display_name)} hasn't added a cell number yet (Me tab), so texting is off.</div>`;
+    }
     return `<div class="split-row" style="grid-template-columns:1fr 170px">
       <span style="color:${esc(p.color)};font-weight:600">${esc(p.display_name)}${s.paid && s.confirmed ? " ✓" : ""}</span>
       <select data-paidshare="${s.id}">${opts.map(([v, t]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
