@@ -1,7 +1,7 @@
-// Family Board service worker: makes the app installable and loads the shell fast.
+// Family Board service worker: makes the app installable, loads the shell fast, and shows notifications.
 // Data always comes live from the database; only the app files are cached.
-const CACHE = "familyboard-P17";
-const SHELL = ["./", "index.html", "app.js?v=P17", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
+const CACHE = "familyboard-P18";
+const SHELL = ["./", "index.html", "app.js?v=P18", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" })))));
@@ -21,4 +21,26 @@ self.addEventListener("fetch", (e) => {
     caches.open(CACHE).then((c) => c.put(e.request, copy));
     return r;
   }).catch(() => caches.match(e.request)));
+});
+
+// phone notifications (P18): sent by the "notify" function in Supabase
+self.addEventListener("push", (e) => {
+  let d = {};
+  try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data ? e.data.text() : "" }; }
+  e.waitUntil(self.registration.showNotification(d.title || "Family Board", {
+    body: d.body || "",
+    icon: "icon-192.png",
+    badge: "icon-192.png",
+    tag: d.tag || undefined,
+    data: { url: d.url || "./" },
+  }));
+});
+
+self.addEventListener("notificationclick", (e) => {
+  e.notification.close();
+  const url = (e.notification.data && e.notification.data.url) || "./";
+  e.waitUntil(self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((wins) => {
+    for (const w of wins) if ("focus" in w) return w.focus();
+    return self.clients.openWindow(url);
+  }));
 });

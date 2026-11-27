@@ -59,6 +59,7 @@ async function start(user) {
   $("today").textContent = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   await paintAvatar($("me"), member);
   fillProfile();
+  paintPush().catch(() => {});
   $("meEmail").textContent = user.email;
   $("meRole").textContent = member?.role === "admin" ? "Admin" : member?.bill_manager ? "Bill manager" : "Family member";
   fillNoteTo();
@@ -679,10 +680,12 @@ $("noteForm").addEventListener("submit", async (e) => {
   const to = $("noteTo").value || null;
   const priv = $("notePrivate").checked;
   if (priv && !to) { $("noteErr").textContent = "Pick a person for a private note."; return; }
-  const { error } = await db.from("notes").insert({
+  const { data: posted, error } = await db.from("notes").insert({
     author_id: me.id, to_member: to, body: $("noteBody").value.trim(), pinned: $("notePin").checked, private: priv,
-  });
+  }).select("id").single();
+  const notifyNote = () => posted?.id && db.functions.invoke("notify", { body: { type: "note", note_id: posted.id } }).catch(() => {});
   if (error) { $("noteErr").textContent = "Couldn't post: " + error.message; return; }
+  notifyNote();
   $("noteBody").value = ""; $("notePin").checked = false; $("notePrivate").checked = false;
   loadNotes();
 });
@@ -706,6 +709,68 @@ async function loadNotes() {
     loadNotes();
   }));
 }
+
+// ---------- phone notifications (P18) ----------
+const PUSH_PUBLIC_KEY = "BE8uAPmnmhXH3lk6OjtteGk3hDbXGkbUrIZaaj-KVHh_W6Y7enIVK3UoordOqoqjqUKkaniuHC_R8OvP-699Xlg";
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent);
+const isInstalled = () => window.matchMedia("(display-mode: standalone)").matches || navigator.standalone === true;
+function keyBytes(b64) {
+  const pad = "=".repeat((4 - (b64.length % 4)) % 4);
+  const raw = atob((b64 + pad).replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+}
+async function pushSub() {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return null;
+  const reg = await navigator.serviceWorker.ready;
+  return reg.pushManager.getSubscription();
+}
+async function paintPush() {
+  const show = (id, on) => $(id).classList.toggle("hidden", !on);
+  $("pushErr").textContent = "";
+  if (!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) {
+    $("pushState").textContent = isIOS && !isInstalled()
+      ? "On iPhone, first add the app to your Home Screen (Share button > Add to Home Screen), open it from there, then come back here."
+      : "This phone's browser can't do notifications. Try Chrome, or add the app to your home screen.";
+    show("pushOn", false); show("pushTest", false); show("pushOff", false);
+    return;
+  }
+  const sub = await pushSub();
+  if (sub && Notification.permission === "granted") {
+    $("pushState").textContent = "Notifications are on for this phone: bills due tomorrow/today/overdue, reminders, and notes for you.";
+    show("pushOn", false); show("pushTest", true); show("pushOff", true);
+  } else if (Notification.permission === "denied") {
+    $("pushState").textContent = "Notifications are blocked for this app. Turn them on in your phone's settings for this app/site, then come back.";
+    show("pushOn", false); show("pushTest", false); show("pushOff", false);
+  } else {
+    $("pushState").textContent = "Get a heads-up when a bill is due, when it's overdue, when someone sends you a reminder, or leaves you a note.";
+    show("pushOn", true); show("pushTest", false); show("pushOff", false);
+  }
+}
+$("pushOn").addEventListener("click", async () => {
+  $("pushErr").textContent = "";
+  try {
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") return paintPush();
+    const reg = await navigator.serviceWorker.ready;
+    const sub = (await reg.pushManager.getSubscription()) || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(PUSH_PUBLIC_KEY) });
+    const j = sub.toJSON();
+    const { error } = await db.from("push_subscriptions").upsert({ member_id: me.id, endpoint: j.endpoint, p256dh: j.keys.p256dh, auth: j.keys.auth }, { onConflict: "endpoint" });
+    if (error) throw error;
+    await paintPush();
+  } catch (e) {
+    $("pushErr").textContent = "Couldn't turn on notifications: " + (e?.message || e);
+  }
+});
+$("pushTest").addEventListener("click", async () => {
+  $("pushErr").textContent = "Sending…";
+  const { data, error } = await db.functions.invoke("notify", { body: { type: "test" } });
+  $("pushErr").textContent = error ? "Couldn't send the test: " + error.message : data?.sent ? "Sent — it should pop up in a few seconds." : "Nothing was sent. Try turning notifications off and on again.";
+});
+$("pushOff").addEventListener("click", async () => {
+  const sub = await pushSub();
+  if (sub) { await db.from("push_subscriptions").delete().eq("endpoint", sub.endpoint); await sub.unsubscribe(); }
+  paintPush();
+});
 
 // ---------- profile (P2) ----------
 const COLORS = ["#7FA8F9", "#E57FA8", "#A98BF5", "#5DC26A", "#F0A04B", "#4FC1B0", "#F2C14E", "#FF8A80"];
@@ -1011,6 +1076,7 @@ function drawWhoPaid(shares) {
       note += p.phone
         ? `<div style="grid-column:1/-1"><a class="chip" style="display:inline-block;margin-top:2px;color:var(--accent)" href="${esc(smsLink(p.phone, reminderText(p.display_name, editing.name, shareAmount(editing, s, saved), editing.due_date)))}">💬 Text ${esc(p.display_name)} a reminder</a></div>`
         : `<div class="sub" style="grid-column:1/-1">${esc(p.display_name)} hasn't added a cell number yet (Me tab), so texting is off.</div>`;
+      note += `<div style="grid-column:1/-1"><button type="button" class="chip" style="border:0;min-height:30px;color:var(--accent)" data-pushremind="${s.id}">🔔 Send ${esc(p.display_name)} a reminder notification</button></div>`;
     }
     return `<div class="split-row" style="grid-template-columns:1fr 170px">
       <span style="color:${esc(p.color)};font-weight:600">${esc(p.display_name)}${s.paid && s.confirmed ? " ✓" : ""}</span>
@@ -1029,6 +1095,17 @@ function drawWhoPaid(shares) {
     if (error) return err("Couldn't save who paid: " + error.message);
     Object.assign(s, fields);
     drawWhoPaid(shares);
+  }));
+  $("whoPaid").querySelectorAll("[data-pushremind]").forEach((b) => b.addEventListener("click", async () => {
+    const s = saved.find((x) => x.id === b.dataset.pushremind);
+    const p = people[s.member_id];
+    const amt = shareAmount(editing, s, saved);
+    const body = `Your share of ${editing.name} is ${money(amt)}, ${daysUntil(editing.due_date) < 0 ? "was due" : "due"} ${fmtDate(editing.due_date)}.`;
+    b.disabled = true;
+    const { data, error } = await db.functions.invoke("notify", { body: { type: "remind", to: s.member_id, body } });
+    b.disabled = false;
+    if (error) return err("Couldn't send: " + error.message);
+    b.textContent = data?.sent ? `✓ Sent to ${p.display_name}` : `${p.display_name} hasn't turned on notifications yet — try a text`;
   }));
   $("whoPaid").querySelectorAll("[data-okshare]").forEach((a) => a.addEventListener("click", async (e) => {
     e.preventDefault();
