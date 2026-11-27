@@ -1133,8 +1133,26 @@ async function loadBills() {
       ${logoTile(b)}
       <div class="grow"><div class="name">${esc(b.name)}</div>
       <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${repeatLabel(b) ? " · " + repeatLabel(b) : ""}</div>
-      <div class="sub">${who.length ? "Split: " + esc(who.join(", ")) + ` · ${(byBill[b.id] || []).filter((s) => s.paid).length} of ${who.length} paid` : "Not split yet"}</div></div>
+      <div class="sub">${who.length ? "Split: " + esc(who.join(", ")) + ` · ${(byBill[b.id] || []).filter((s) => s.paid).length} of ${who.length} paid` : "Not split yet"}</div>
+      ${canManage() ? receivedLines(b) : ""}</div>
       <div class="amt">${money(b.amount)}</div></div>`;
+  };
+  // P29: the bill administrator sees, per person, whether their share came in (and can confirm it right here)
+  const receivedLines = (b) => {
+    const list = (byBill[b.id] || []).filter((s) => people[s.member_id]);
+    if (!list.length) return "";
+    const pay = payeeFor(b);
+    return `<div style="margin-top:6px">` + list.map((s) => {
+      const p = people[s.member_id];
+      const amt = money(shareAmount(b, s, list));
+      const self = pay && p.id === pay.id;
+      let st;
+      if (s.paid && (s.confirmed || self)) st = `<span style="color:var(--paid)">${self ? "your share ✓" : `received ✓ · ${esc(methodLabel(s.paid_method, b))}`}</span>`;
+      else if (s.paid) st = `<span class="soon">says paid · ${esc(methodLabel(s.paid_method, b))}</span>
+        <button type="button" class="chip" data-recv="${s.id}" style="border:0;min-height:30px;margin-left:6px;color:var(--accent)">Confirm ✓</button>`;
+      else st = `<span class="sub" style="margin:0">${self ? "your share · not marked" : "not yet"}</span>`;
+      return `<div style="font-size:14px;margin-top:3px"><b style="color:${esc(p.color)}">${esc(p.display_name)}</b> ${amt} — ${st}</div>`;
+    }).join("") + `</div>`;
   };
   if (pastDue.length) html += `<h2 class="late">Past due</h2>` + pastDue.map(billRow).join("") + `<h2>This month &amp; coming up</h2>`;
   html += current.length ? current.map(billRow).join("") : `<div class="card sub">No household bills this month yet.</div>`;
@@ -1160,6 +1178,13 @@ async function loadBills() {
   $("newMine").addEventListener("click", () => openEditor({ owner_id: me.id, show_on_board: true }, []));
   document.querySelectorAll("[data-mine]").forEach((el) => el.addEventListener("click", () => {
     openEditor(myRows.find((r) => r.id === el.dataset.mine), []);
+  }));
+  document.querySelectorAll("[data-recv]").forEach((el) => el.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    el.disabled = true; el.textContent = "Saving…";
+    const { error } = await db.from("bill_shares").update({ confirmed: true }).eq("id", el.dataset.recv);
+    if (error) { el.disabled = false; el.textContent = "Couldn't save — try again"; return; }
+    loadBills();
   }));
   document.querySelectorAll("[data-edit]").forEach((el) => el.addEventListener("click", () => {
     const b = rows.find((r) => r.id === el.dataset.edit);
