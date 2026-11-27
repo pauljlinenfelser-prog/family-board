@@ -39,7 +39,7 @@ function showLogin() {
 async function start(user) {
   if (me?.id === user.id) return;
   me = user;
-  const { data: rows } = await db.from("members").select("id,display_name,color,role,cashtag,bill_manager,avatar_path,must_change_password,phone").order("created_at");
+  const { data: rows } = await db.from("members").select("id,display_name,color,role,cashtag,bill_manager,avatar_path,must_change_password,phone,linked_with").order("created_at");
   people = Object.fromEntries((rows || []).map((r) => [r.id, r]));
   member = people[user.id];
   if (member?.role === "display") {
@@ -61,6 +61,7 @@ async function start(user) {
   fillProfile();
   paintPush().catch(() => {});
   paintCal().catch(() => {});
+  paintLinks();
   $("meEmail").textContent = user.email;
   $("meRole").textContent = member?.role === "admin" ? "Admin" : member?.bill_manager ? "Bill manager" : "Family member";
   fillNoteTo();
@@ -772,7 +773,7 @@ function cashAppLink(amount, person = payee()) {
 
 function openShare(i) {
   const pay = payeeFor(i.info);
-  const iAmPayee = pay?.id === me.id;
+  const iAmPayee = pay?.id === me.id || (!!pay && member?.linked_with === pay.id);
   const link = iAmPayee ? null : cashAppLink(i.amount, pay);
   if (i.personalId) {
     let h = `<h2>${esc(i.name)}</h2><div class="card"><div class="sub">Your bill</div><div class="big">${money(i.amount)}</div>
@@ -799,6 +800,8 @@ function openShare(i) {
       h += `<button class="btn ghost" data-pay="cashapp">I paid with Cash App</button>`;
       h += `<button class="btn ghost" data-pay="to_admin">I paid ${esc(pay?.display_name ?? "admin")}</button>`;
     }
+    const partner = people[member?.linked_with];
+    if (partner) h += `<div class="sub" style="margin-top:10px">🔗 You and ${esc(partner.display_name)} share money — marking yours also marks ${esc(partner.display_name)}'s.</div>`;
     // autopay (P28): nobody pays the company; the person being paid just marks their own share
     if (i.info?.autopay) { if (iAmPayee) h += `<button class="btn" data-pay="direct">Mark my share paid</button>`; }
     else h += `<button class="btn ghost" data-pay="direct">I paid the company directly</button>`;
@@ -1036,6 +1039,29 @@ $("calUnlink").addEventListener("click", async () => {
   await paintCal();
 });
 
+// ---------- shared money (P31): the admin links two people who share a bank account ----------
+function paintLinks() {
+  $("linkBox").classList.toggle("hidden", member?.role !== "admin");
+  if (member?.role !== "admin") return;
+  const fam = familyList();
+  $("linkRows").innerHTML = fam.map((p) => `<div class="split-row" style="grid-template-columns:1fr 170px">
+      <span style="color:${esc(p.color)};font-weight:600">${esc(p.display_name)} shares money with</span>
+      <select data-link="${p.id}"><option value="">nobody</option>${fam.filter((q) => q.id !== p.id).map((q) =>
+        `<option value="${q.id}" ${p.linked_with === q.id ? "selected" : ""}>${esc(q.display_name)}</option>`).join("")}</select></div>`).join("");
+  $("linkRows").querySelectorAll("[data-link]").forEach((sel) => sel.addEventListener("change", async () => {
+    const a = sel.dataset.link, b = sel.value || null;
+    $("linkErr").textContent = "Saving…";
+    const { error } = await db.rpc("set_money_link", { a, b });
+    if (error) return ($("linkErr").textContent = "Couldn't save: " + error.message);
+    const { data: rows } = await db.from("members").select("id,linked_with");
+    (rows || []).forEach((r) => { if (people[r.id]) people[r.id].linked_with = r.linked_with; });
+    $("linkErr").style.color = "var(--paid)";
+    $("linkErr").textContent = b ? `Linked ✓ ${people[a].display_name} and ${people[b].display_name}.` : `${people[a].display_name} isn't linked to anyone now.`;
+    setTimeout(() => { $("linkErr").textContent = ""; $("linkErr").style.color = ""; }, 4000);
+    paintLinks();
+  }));
+}
+
 // ---------- profile (P2) ----------
 const COLORS = ["#7FA8F9", "#E57FA8", "#A98BF5", "#5DC26A", "#F0A04B", "#4FC1B0", "#F2C14E", "#FF8A80"];
 let pickedColor = null;
@@ -1194,7 +1220,8 @@ async function loadBills() {
       else if (s.paid) st = `<span class="soon">says paid · ${esc(methodLabel(s.paid_method, b))}</span>
         <button type="button" class="chip" data-recv="${s.id}" style="border:0;min-height:30px;margin-left:6px;color:var(--accent)">Confirm ✓</button>`;
       else st = `<span class="sub" style="margin:0">${self ? "your share · not marked" : "not yet"}</span>`;
-      return `<div style="font-size:14px;margin-top:3px"><b style="color:${esc(p.color)}">${esc(p.display_name)}</b> ${amt} — ${st}</div>`;
+      const lk = people[p.linked_with] && list.some((x) => x.member_id === p.linked_with) ? ` <span class="sub" style="margin:0">🔗 ${esc(people[p.linked_with].display_name)}</span>` : "";
+      return `<div style="font-size:14px;margin-top:3px"><b style="color:${esc(p.color)}">${esc(p.display_name)}</b>${lk} ${amt} — ${st}</div>`;
     }).join("") + `</div>`;
   };
   if (pastDue.length) html += `<h2 class="late">Past due</h2>` + pastDue.map(billRow).join("") + `<h2>This month &amp; coming up</h2>`;
