@@ -109,7 +109,7 @@ async function loadBoard() {
   const [shares, mine, toConfirm, events] = await Promise.all([
     db.from("bill_share_amounts").select("id,bill_id,bill_name,bill_amount,share_amount,paid,paid_method,confirmed,due_date,member_id").eq("member_id", me.id)
       .lte("due_date", in30).or(windowFilter).order("due_date"),
-    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,admin_id").eq("owner_id", me.id)
+    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number").eq("owner_id", me.id)
       .lte("due_date", in30).or(windowFilter).order("due_date"),
     canManage()
       ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
@@ -117,13 +117,13 @@ async function loadBoard() {
     db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes").lte("starts_at", in7 + "T23:59:59")
       .or(`starts_at.gte.${today},ends_at.gte.${today}`).order("starts_at").limit(30),
   ]);
-  const { data: others } = await db.from("bills").select("id,name,amount,due_date,owner_id,admin_id,logo_url,website,full_images")
+  const { data: others } = await db.from("bills").select("id,name,amount,due_date,owner_id,admin_id,logo_url,website,full_images,pay_url,account_number")
     .not("owner_id", "is", null).neq("owner_id", me.id).eq("paid", false).lte("due_date", in7).order("due_date");
   helpBills = (others || []).filter((b) => people[b.owner_id]);
   // logos + repeat info for the household bills behind my shares
   const billIds = [...new Set((shares.data || []).map((s) => s.bill_id))];
   const { data: shareBills } = billIds.length
-    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days,full_images,admin_id").in("id", billIds)
+    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number").in("id", billIds)
     : { data: [] };
   const billInfo = Object.fromEntries((shareBills || []).map((b) => [b.id, b]));
 
@@ -628,6 +628,31 @@ function itemRow(i) {
     <div class="amt ${i.paid ? "paid" : ""}">${money(i.amount)}</div></div>`;
 }
 
+// ---------- pay online + account number (P23) ----------
+function normUrl(v) {
+  v = String(v || "").trim();
+  if (!v) return null;
+  return /^https?:\/\//i.test(v) ? v : "https://" + v;
+}
+function payBox(info) {
+  if (!info) return "";
+  const url = info.pay_url || (info.website ? "https://" + info.website : "");
+  let h = "";
+  if (url) h += `<a class="btn ghost" href="${esc(url)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none">🌐 Pay online${info.pay_url ? "" : ` (${esc(info.website)})`}</a>`;
+  if (info.account_number) h += `<div class="row" style="margin-top:12px"><div class="grow"><div class="sub" style="margin:0">Account number</div>
+      <div style="font-weight:700;letter-spacing:1px">${esc(info.account_number)}</div></div>
+      <button type="button" class="chip" data-copy="${esc(info.account_number)}" style="border:0;min-height:36px;padding:0 14px">Copy</button></div>`;
+  if (url) h += `<div class="sub" style="margin-top:8px">After paying on the website, come back and mark it paid.</div>`;
+  return h;
+}
+document.addEventListener("click", async (e) => {
+  const c = e.target.closest("[data-copy]");
+  if (!c) return;
+  try { await navigator.clipboard.writeText(c.dataset.copy); c.textContent = "Copied ✓"; }
+  catch { c.textContent = "Couldn't copy"; }
+  setTimeout(() => (c.textContent = "Copy"), 2000);
+});
+
 // ---------- "could use a hand" (P21): help pay someone else's bill ----------
 function openHelp(b) {
   const owner = people[b.owner_id];
@@ -646,6 +671,7 @@ function openHelp(b) {
     }
     if (admin.phone) h += `<a class="btn ghost" id="helpText" style="display:flex;align-items:center;justify-content:center;text-decoration:none">💬 Text ${esc(admin.display_name)}</a>`;
   }
+  h += payBox(b);
   h += viewBillButton(b, b.name);
   h += `<button class="btn ghost" data-back="1">Back</button></div>`;
   $("tab-board").innerHTML = h;
@@ -686,7 +712,9 @@ function openShare(i) {
     h += i.paid ? `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — not paid yet</button>`
       : `<button class="btn" data-pay="direct">Mark paid</button>`;
     if (i.info.website) h += `<a class="btn ghost" href="https://${esc(i.info.website)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none">Open ${esc(i.info.website)}</a>`;
-    h += viewBillButton(i.info, i.name);
+    h += payBox(i.info);
+    h += payBox(i.info);
+  h += viewBillButton(i.info, i.name);
     h += `<button class="btn ghost" data-back="1">Back</button><div class="err" id="shareErr"></div></div>`;
     $("tab-board").innerHTML = h;
     window.scrollTo(0, 0);
@@ -995,10 +1023,10 @@ async function loadBills() {
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
   const [bills, shares, sample, mine] = await Promise.all([
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images,admin_id").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images,admin_id,pay_url,account_number").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("id,bill_id,member_id,percent,fixed_amount,paid,paid_method,paid_on,confirmed"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images,admin_id").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images,admin_id,pay_url,account_number").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
   ]);
   const byBill = {};
   (shares.data || []).forEach((s) => (byBill[s.bill_id] ??= []).push(s));
@@ -1088,6 +1116,8 @@ function openEditor(bill, shares) {
   $("bAmount").value = bill.amount ?? "";
   $("bDue").value = bill.due_date ?? localISO(new Date(Date.now() + 14 * 86400000));
   $("bSite").value = bill.website ?? "";
+  $("bPayUrl").value = bill.pay_url ?? "";
+  $("bAcct").value = bill.account_number ?? "";
   logoUrl = bill.logo_url ?? null;
   paintLogo();
   $("logoPicker").classList.add("hidden");
@@ -1285,7 +1315,8 @@ $("saveBill").addEventListener("click", async () => {
   const repeat_kind = $("bRepeat").value;
   const repeat_days = repeat_kind === "days" ? parseInt($("bDays").value, 10) : null;
   if (repeat_kind === "days" && !(repeat_days >= 1 && repeat_days <= 365)) return ($("billErr").textContent = "Enter how many days between bills (1 to 365).");
-  const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, logo_url: logoUrl, owner_id: null, admin_id: $("bAdmin").value || null };
+  const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, logo_url: logoUrl, owner_id: null, admin_id: $("bAdmin").value || null,
+    pay_url: normUrl($("bPayUrl").value), account_number: $("bAcct").value.trim() || null };
   if (personal) Object.assign(fields, { owner_id: me.id, show_on_board: $("bShow").checked, split_method: "equal" });
   let billId = editing.id;
   if (billId) {
