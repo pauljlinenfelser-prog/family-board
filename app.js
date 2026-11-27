@@ -101,13 +101,19 @@ async function loadBoard() {
   const nextMonth = localISO(next);
   const in14 = localISO(new Date(Date.now() + 14 * 86400000));
 
-  const [due, shares, mine] = await Promise.all([
+  const [due, shares, mine, toConfirm] = await Promise.all([
     db.from("bills").select("id,name,amount,due_date,owner_id,paid").eq("paid", false).lte("due_date", in14).order("due_date"),
-    db.from("bill_share_amounts").select("bill_id,bill_name,share_amount,paid,due_date,member_id").eq("member_id", me.id).gte("due_date", monthStart).lt("due_date", nextMonth).order("due_date"),
+    // this month's shares, plus unpaid ones from earlier months (past due)
+    db.from("bill_share_amounts").select("id,bill_id,bill_name,share_amount,paid,paid_method,confirmed,due_date,member_id").eq("member_id", me.id)
+      .or(`and(due_date.gte.${monthStart},due_date.lt.${nextMonth}),and(paid.eq.false,due_date.lt.${monthStart})`).order("due_date"),
     db.from("bills").select("id,name,amount,due_date,paid,show_on_board").eq("owner_id", me.id).gte("due_date", monthStart).lt("due_date", nextMonth).order("due_date"),
+    canManage()
+      ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
+      : Promise.resolve({ data: [] }),
   ]);
+  const waiting = toConfirm.data || [];
   const items = [
-    ...(shares.data || []).map((s) => ({ name: s.bill_name, amount: Number(s.share_amount), paid: s.paid, due: s.due_date, kind: "Household share" })),
+    ...(shares.data || []).map((s) => ({ shareId: s.id, name: s.bill_name, amount: Number(s.share_amount), paid: s.paid, method: s.paid_method, confirmed: s.confirmed, due: s.due_date, kind: "Household share" })),
     ...(mine.data || []).map((b) => ({ name: b.name, amount: Number(b.amount), paid: b.paid, due: b.due_date, kind: b.show_on_board ? "Personal" : "Personal · private" })),
   ].sort((a, b) => a.due.localeCompare(b.due));
   const total = items.reduce((t, i) => t + i.amount, 0);
@@ -123,6 +129,17 @@ async function loadBoard() {
       <div class="bar"><div style="width:${pct}%;background:${esc(color)}"></div></div>
     </div>`;
   html += items.length ? items.map(itemRow).join("") : `<div class="card sub">Nothing on your list this month.</div>`;
+  if (items.some((i) => i.shareId && !i.paid)) html += `<p class="sub center">Tap one of your shares to mark it paid.</p>`;
+
+  if (waiting.length) {
+    html += `<h2>Waiting for you to confirm</h2>`;
+    html += waiting.map((w) => {
+      const p = people[w.member_id];
+      return `<div class="card row"><div class="grow"><div class="name">${esc(p?.display_name ?? "Someone")} · ${esc(w.bill_name)}</div>
+        <div class="sub">${money(w.share_amount)} · ${esc(methodLabel(w.paid_method))}${w.paid_on ? " · " + fmtDate(w.paid_on) : ""}</div></div>
+        <button class="btn" data-confirm="${w.id}" style="width:auto;min-height:44px;margin:0;padding:0 18px">Confirm ✓</button></div>`;
+    }).join("");
+  }
 
   html += `<h2>Due in the next 2 weeks</h2>`;
   const dueRows = due.data || [];
@@ -135,17 +152,86 @@ async function loadBoard() {
           <div class="sub ${cls}">${dueLabel(b.due_date)} · ${esc(whose)}</div></div><div class="amt">${money(b.amount)}</div></div>`;
       }).join("")
     : `<div class="card sub">Nothing due in the next two weeks.</div>`;
-  html += `<p class="sub center" style="margin-top:20px">Marking bills paid comes in the next version.</p>`;
   $("tab-board").innerHTML = html;
+  boardItems = items;
 }
 
 function itemRow(i) {
   const d = daysUntil(i.due);
   const cls = i.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
-  return `<div class="card row"><div class="grow"><div class="name">${esc(i.name)}</div>
-    <div class="sub ${cls}">${i.paid ? "Paid ✓" : dueLabel(i.due)} · ${esc(i.kind)}</div></div>
+  let status = i.paid ? "Paid ✓" : dueLabel(i.due);
+  if (i.paid && i.shareId) status = i.confirmed ? "Paid ✓ · confirmed" : `Paid · ${methodLabel(i.method)} · waiting for ${payee()?.display_name ?? "admin"} to confirm`;
+  return `<div class="card row" ${i.shareId ? `data-share="${i.shareId}" style="cursor:pointer"` : ""}><div class="grow"><div class="name">${esc(i.name)}</div>
+    <div class="sub ${cls}">${esc(status)} · ${esc(i.kind)}</div></div>
     <div class="amt ${i.paid ? "paid" : ""}">${money(i.amount)}</div></div>`;
 }
+
+// ---------- marking shares paid (P8) ----------
+let boardItems = [];
+// household shares are paid back to the admin
+const payee = () => Object.values(people).find((p) => p.role === "admin");
+function methodLabel(m) {
+  const who = payee()?.display_name ?? "admin";
+  return { to_admin: `paid ${who}`, direct: "paid the company", cashapp: "Cash App", other: "other" }[m] ?? "paid";
+}
+function cashAppLink(amount) {
+  const tag = String(payee()?.cashtag ?? "").trim().replace(/^\$/, "");
+  if (!tag) return null;
+  return `https://cash.app/$${encodeURIComponent(tag)}/${Number(amount).toFixed(2)}`;
+}
+
+function openShare(i) {
+  const pay = payee();
+  const iAmPayee = pay?.id === me.id;
+  const link = iAmPayee ? null : cashAppLink(i.amount);
+  let h = `<h2>${esc(i.name)}</h2><div class="card">
+    <div class="sub">Your share</div><div class="big">${money(i.amount)}</div>
+    <div class="sub">${i.paid ? (i.confirmed ? "Paid ✓ · confirmed" : "Paid · " + esc(methodLabel(i.method))) : dueLabel(i.due)}</div>`;
+  if (!i.paid) {
+    if (link) h += `<a class="btn" href="${esc(link)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none;background:#00D64F;color:#04210F">Pay ${money(i.amount)} with Cash App</a>
+      <div class="sub center" style="margin-top:6px">Opens Cash App to ${esc(pay.display_name)}. Come back and tap "I paid with Cash App".</div>`;
+    else if (!iAmPayee && pay) h += `<div class="sub" style="margin-top:10px">${esc(pay.display_name)} hasn't added a Cash App tag yet (Me tab), so the Cash App button is hidden.</div>`;
+    if (!iAmPayee) {
+      h += `<button class="btn ghost" data-pay="cashapp">I paid with Cash App</button>`;
+      h += `<button class="btn ghost" data-pay="to_admin">I paid ${esc(pay?.display_name ?? "admin")}</button>`;
+    }
+    h += `<button class="btn ghost" data-pay="direct">I paid the company directly</button>`;
+  } else if (!i.confirmed) {
+    h += `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — I haven't paid this yet</button>`;
+  }
+  h += `<button class="btn ghost" data-back="1">Back</button><div class="err" id="shareErr"></div></div>`;
+  $("tab-board").innerHTML = h;
+  window.scrollTo(0, 0);
+  $("tab-board").querySelectorAll("[data-pay]").forEach((b) => b.addEventListener("click", () => markShare(i, b.dataset.pay)));
+  $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+}
+
+async function markShare(i, how) {
+  const fields = how === "undo"
+    ? { paid: false, paid_on: null, paid_method: null }
+    : { paid: true, paid_on: localISO(), paid_method: how };
+  // the admin or a bill manager paying their own share needs no confirming
+  if (how !== "undo" && canManage()) fields.confirmed = true;
+  const { error } = await db.from("bill_shares").update(fields).eq("id", i.shareId);
+  if (error) return ($("shareErr").textContent = "Couldn't save: " + error.message);
+  loadBoard();
+}
+
+$("tab-board").addEventListener("click", async (e) => {
+  const row = e.target.closest("[data-share]");
+  if (row) {
+    const i = boardItems.find((x) => x.shareId === row.dataset.share);
+    if (i) openShare(i);
+    return;
+  }
+  const c = e.target.closest("[data-confirm]");
+  if (c) {
+    c.disabled = true;
+    const { error } = await db.from("bill_shares").update({ confirmed: true }).eq("id", c.dataset.confirm);
+    if (error) { c.disabled = false; alert("Couldn't confirm: " + error.message); return; }
+    loadBoard();
+  }
+});
 
 function dueLabel(iso) {
   const d = daysUntil(iso);
