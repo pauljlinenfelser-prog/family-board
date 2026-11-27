@@ -31,6 +31,7 @@ db.auth.onAuthStateChange((_evt, session) => {
 
 function showLogin() {
   me = null;
+  $("setpw").classList.add("hidden");
   $("app").classList.add("hidden");
   $("login").classList.remove("hidden");
 }
@@ -38,7 +39,7 @@ function showLogin() {
 async function start(user) {
   if (me?.id === user.id) return;
   me = user;
-  const { data: rows } = await db.from("members").select("id,display_name,color,role,cashtag,bill_manager,avatar_path").order("created_at");
+  const { data: rows } = await db.from("members").select("id,display_name,color,role,cashtag,bill_manager,avatar_path,must_change_password").order("created_at");
   people = Object.fromEntries((rows || []).map((r) => [r.id, r]));
   member = people[user.id];
   if (member?.role === "display") {
@@ -47,6 +48,12 @@ async function start(user) {
     return;
   }
   $("login").classList.add("hidden");
+  if (member?.must_change_password) {
+    $("setpw").classList.remove("hidden");
+    $("app").classList.add("hidden");
+    return;
+  }
+  $("setpw").classList.add("hidden");
   $("app").classList.remove("hidden");
   $("hello").textContent = `Hi, ${member?.display_name ?? "there"}`;
   $("today").textContent = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
@@ -58,6 +65,21 @@ async function start(user) {
   loadBoard();
   loadNotes();
 }
+
+// ---------- first sign-in password (P4) ----------
+$("setpwForm").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  $("setpwErr").textContent = "";
+  const a = $("newpw1").value, b = $("newpw2").value;
+  if (a.length < 8) return ($("setpwErr").textContent = "Use at least 8 characters.");
+  if (a !== b) return ($("setpwErr").textContent = "Those two don't match.");
+  const { error } = await db.auth.updateUser({ password: a });
+  if (error) return ($("setpwErr").textContent = error.message.includes("different") ? "Pick a password different from the temporary one." : "Couldn't save: " + error.message);
+  await db.from("members").update({ must_change_password: false }).eq("id", me.id);
+  member.must_change_password = false;
+  $("newpw1").value = ""; $("newpw2").value = "";
+  const u = me; me = null; start(u);
+});
 
 // ---------- tabs ----------
 document.querySelectorAll("nav button").forEach((b) =>

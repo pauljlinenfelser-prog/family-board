@@ -70,6 +70,22 @@
   </main>
 </section>
 
+<!-- first sign-in: choose your own password -->
+<section id="setpw" class="hidden">
+  <main style="padding-top: 10vh">
+    <h1 class="center" style="margin-bottom:6px">Welcome to Family Board</h1>
+    <p class="center sub" style="margin-bottom:20px">You signed in with a temporary password. Choose your own to finish.</p>
+    <form id="setpwForm">
+      <label for="newpw1">New password (at least 8 characters)</label>
+      <input id="newpw1" type="password" autocomplete="new-password" minlength="8" required>
+      <label for="newpw2">Type it again</label>
+      <input id="newpw2" type="password" autocomplete="new-password" minlength="8" required>
+      <button class="btn" type="submit">Save my password</button>
+      <div class="err" id="setpwErr"></div>
+    </form>
+  </main>
+</section>
+
 <!-- app -->
 <section id="app" class="hidden">
   <header>
@@ -148,7 +164,7 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P3</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P4</p>
   </main>
 
   <nav>
