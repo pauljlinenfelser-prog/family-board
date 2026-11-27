@@ -707,6 +707,10 @@ function openHelp(b) {
       h += `<div class="sub" style="margin-top:10px">${esc(admin.display_name)} hasn't added a Cash App tag yet (Me tab).</div>`;
     }
     if (admin.phone) h += `<a class="btn ghost" id="helpText" style="display:flex;align-items:center;justify-content:center;text-decoration:none">💬 Text ${esc(admin.display_name)}</a>`;
+    // P30: record it so ${admin} sees "received from me" on their Bills tab
+    h += `<button class="btn ghost" data-sent="cashapp">I sent it with Cash App</button>
+      <button class="btn ghost" data-sent="other">I paid ${esc(admin.display_name)} another way</button>
+      <div class="err" id="helpErr"></div><div id="helpMine"></div>`;
   }
   h += payBox(b);
   h += viewBillButton(b, b.name);
@@ -721,6 +725,33 @@ function openHelp(b) {
   $("helpAmt")?.addEventListener("input", refresh);
   refresh();
   $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+  if (!(admin && admin.id !== me.id)) return;
+  // P30: what I've already sent toward this bill
+  const paintMine = async () => {
+    const { data } = await db.from("bill_payments").select("id,amount,method,sent_on,confirmed").eq("bill_id", b.id).eq("from_member", me.id).order("created_at");
+    $("helpMine").innerHTML = (data || []).length ? `<div class="sub" style="margin-top:12px">What you've sent toward this bill:</div>` + data.map((p) =>
+      `<div class="row" style="margin-top:4px"><div class="grow">${money(p.amount)} · ${p.method === "cashapp" ? "Cash App" : "other way"} · ${esc(fmtDate(p.sent_on))}
+        <span class="${p.confirmed ? "" : "soon"}" style="${p.confirmed ? "color:var(--paid)" : ""}">${p.confirmed ? " · received ✓" : ` · waiting for ${esc(admin.display_name)} to confirm`}</span></div>
+        ${p.confirmed ? "" : `<button type="button" class="chip" data-unsent="${p.id}" style="border:0;min-height:30px;color:var(--red)">Undo</button>`}</div>`).join("") : "";
+    $("helpMine").querySelectorAll("[data-unsent]").forEach((x) => x.addEventListener("click", async () => {
+      if (!confirm("Take this back? Only if you didn't actually send it.")) return;
+      const { error } = await db.from("bill_payments").delete().eq("id", x.dataset.unsent);
+      if (error) return ($("helpErr").textContent = "Couldn't undo: " + error.message);
+      paintMine();
+    }));
+  };
+  $("tab-board").querySelectorAll("[data-sent]").forEach((btn) => btn.addEventListener("click", async () => {
+    const amt = parseFloat(String($("helpAmt")?.value || "").replace(/[$,]/g, "")) || 0;
+    if (amt <= 0) return ($("helpErr").textContent = "Type how much you sent first.");
+    btn.disabled = true;
+    const { error } = await db.from("bill_payments").insert({ bill_id: b.id, amount: Math.round(amt * 100) / 100, method: btn.dataset.sent });
+    btn.disabled = false;
+    if (error) return ($("helpErr").textContent = "Couldn't save: " + error.message);
+    $("helpErr").style.color = "var(--paid)";
+    $("helpErr").textContent = `Saved ✓ — ${admin.display_name} will see ${money(amt)} from you on their Bills tab.`;
+    paintMine();
+  }));
+  paintMine();
 }
 
 // ---------- marking shares paid (P8) ----------
@@ -1111,12 +1142,24 @@ async function loadBills() {
   $("billEditor").classList.add("hidden");
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
-  const [bills, shares, sample, mine] = await Promise.all([
+  const ago60 = localISO(new Date(Date.now() - 60 * 86400000));
+  const [bills, shares, sample, mine, helps] = await Promise.all([
     db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images,admin_id,pay_url,account_number,autopay,pay_note").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("id,bill_id,member_id,percent,fixed_amount,paid,paid_method,paid_on,confirmed"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
     db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images,admin_id,pay_url,account_number,autopay,pay_note").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    // P30: money people sent toward personal bills (I only see ones to me / on my bills / from me)
+    db.from("bill_payments").select("id,bill_id,from_member,to_member,amount,method,sent_on,confirmed,bills(name,owner_id)").gte("sent_on", ago60).order("created_at"),
   ]);
+  const helpsByBill = {};
+  (helps.data || []).filter((p) => p.from_member !== me.id).forEach((p) => (helpsByBill[p.bill_id] ??= []).push(p));
+  const helpLine = (p) => {
+    const who = people[p.from_member]?.display_name ?? "Someone";
+    const how = p.method === "cashapp" ? "Cash App" : "other way";
+    const st = p.confirmed ? `<span style="color:var(--paid)">received ✓</span>`
+      : `<span class="soon">says sent</span> <button type="button" class="chip" data-helpok="${p.id}" style="border:0;min-height:30px;margin-left:6px;color:var(--accent)">Confirm ✓</button>`;
+    return `<div style="font-size:14px;margin-top:3px"><b style="color:${esc(people[p.from_member]?.color ?? "inherit")}">${esc(who)}</b> ${money(p.amount)} · ${how} · ${esc(fmtDate(p.sent_on))} — ${st}</div>`;
+  };
   const byBill = {};
   (shares.data || []).forEach((s) => (byBill[s.bill_id] ??= []).push(s));
   let html = `<h2>Household bills</h2>`;
@@ -1168,9 +1211,14 @@ async function loadBills() {
       ${logoTile(b)}
       <div class="grow"><div class="name">${esc(b.name)}</div>
       <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${repeatLabel(b) ? " · " + repeatLabel(b) : ""}</div>
-      <div class="sub">${b.show_on_board ? "On the family board" : "🔒 Private — only you see this"}</div></div>
+      <div class="sub">${b.show_on_board ? "On the family board" : "🔒 Private — only you see this"}</div>
+      ${(helpsByBill[b.id] || []).length ? `<div style="margin-top:6px"><div class="sub" style="margin:0">Payments received</div>${helpsByBill[b.id].map(helpLine).join("")}</div>` : ""}</div>
       <div class="amt">${money(b.amount)}</div></div>`;
   }).join("") : `<div class="card sub">No personal bills yet. Add things only you pay (phone, car, card…).</div>`;
+  // P30: help sent to me for someone else's bill (I'm that bill's administrator)
+  const toMe = (helps.data || []).filter((p) => p.to_member === me.id && p.bills?.owner_id !== me.id && p.from_member !== me.id);
+  if (toMe.length) html += `<h2>Payments sent to you</h2>` + toMe.map((p) =>
+    `<div class="card"><div class="name">${esc(people[p.bills?.owner_id]?.display_name ?? "")}${p.bills?.owner_id ? "'s " : ""}${esc(p.bills?.name ?? "bill")}</div>${helpLine(p)}</div>`).join("");
 
   if (member?.role === "admin" && sample.count) html += `<button class="btn ghost" id="clearSample" style="margin-top:20px">Remove the sample data (${sample.count} sample bills)</button>`;
   $("billsList").innerHTML = html;
@@ -1178,6 +1226,13 @@ async function loadBills() {
   $("newMine").addEventListener("click", () => openEditor({ owner_id: me.id, show_on_board: true }, []));
   document.querySelectorAll("[data-mine]").forEach((el) => el.addEventListener("click", () => {
     openEditor(myRows.find((r) => r.id === el.dataset.mine), []);
+  }));
+  document.querySelectorAll("[data-helpok]").forEach((el) => el.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    el.disabled = true; el.textContent = "Saving…";
+    const { error } = await db.from("bill_payments").update({ confirmed: true }).eq("id", el.dataset.helpok);
+    if (error) { el.disabled = false; el.textContent = "Couldn't save — try again"; return; }
+    loadBills();
   }));
   document.querySelectorAll("[data-recv]").forEach((el) => el.addEventListener("click", async (e) => {
     e.stopPropagation();
