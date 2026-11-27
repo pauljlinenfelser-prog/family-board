@@ -1,10 +1,10 @@
 // Family Board service worker: makes the app installable and loads the shell fast.
 // Data always comes live from the database; only the app files are cached.
-const CACHE = "familyboard-P5";
-const SHELL = ["./", "index.html", "app.js", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
+const CACHE = "familyboard-P6";
+const SHELL = ["./", "index.html", "app.js?v=P6", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
-  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
+  e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" })))));
   self.skipWaiting();
 });
 
@@ -16,7 +16,7 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return; // database + library calls go straight to the network
-  e.respondWith(fetch(e.request).then((r) => {
+  e.respondWith(fetch(e.request, { cache: "no-cache" }).then((r) => {
     const copy = r.clone();
     caches.open(CACHE).then((c) => c.put(e.request, copy));
     return r;
