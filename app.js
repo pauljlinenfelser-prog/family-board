@@ -768,7 +768,9 @@ function openShare(i) {
       h += `<button class="btn ghost" data-pay="cashapp">I paid with Cash App</button>`;
       h += `<button class="btn ghost" data-pay="to_admin">I paid ${esc(pay?.display_name ?? "admin")}</button>`;
     }
-    h += `<button class="btn ghost" data-pay="direct">I paid the company directly</button>`;
+    // autopay (P28): nobody pays the company; the person being paid just marks their own share
+    if (i.info?.autopay) { if (iAmPayee) h += `<button class="btn" data-pay="direct">Mark my share paid</button>`; }
+    else h += `<button class="btn ghost" data-pay="direct">I paid the company directly</button>`;
   } else if (!i.confirmed) {
     h += `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — I haven't paid this yet</button>`;
   }
