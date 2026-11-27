@@ -161,11 +161,13 @@ async function loadBoard() {
 
   html += weekStrip(events.data || [], open, today);
 
-  html += `<h2>Family photos</h2><div class="card sub center" style="padding:22px 16px">Family photos will show here once photo uploads are added.</div>`;
+  html += `<h2 class="row" style="justify-content:space-between">Family photos <span><a href="#" data-allph="1" class="hlink" style="margin-right:14px">See all</a><a href="#" data-addph="1" class="hlink">+ Add</a></span></h2>
+    <div id="homePhotos" class="phgrid"><div class="sub">Loading photos…</div></div>`;
 
   $("tab-board").innerHTML = html;
   boardItems = items;
   walletFront = null;
+  fillHomePhotos();
 }
 
 // ---- wallet cards (P12) ----
@@ -311,6 +313,103 @@ async function openAllEvents() {
   $("evAllBack").addEventListener("click", loadBoard);
 }
 
+// ---------- family photos (P14) ----------
+let photoRows = [];
+async function signPhotos(rows) {
+  if (!rows.length) return {};
+  const { data } = await db.storage.from("family-photos").createSignedUrls(rows.map((r) => r.path), 3600);
+  return Object.fromEntries((data || []).filter((d) => d.signedUrl).map((d) => [d.path, d.signedUrl]));
+}
+async function fillHomePhotos() {
+  const { data } = await db.from("photos").select("id,path,caption,taken_on,show_on_board,uploaded_by,created_at").order("created_at", { ascending: false }).limit(6);
+  const rows = data || [];
+  const el = $("homePhotos");
+  if (!el) return;
+  if (!rows.length) { el.innerHTML = `<div class="card sub center" style="grid-column:1/-1;padding:22px 16px">No photos yet. Tap + Add to share some — they'll rotate on the TV too.</div>`; return; }
+  const urls = await signPhotos(rows);
+  photoRows = rows.map((r) => ({ ...r, url: urls[r.path] }));
+  el.innerHTML = photoRows.map((r) => `<button class="ph" data-ph="${r.id}" style="background-image:url('${esc(r.url ?? "")}')" aria-label="${esc(r.caption ?? "Photo")}"></button>`).join("");
+}
+async function openAllPhotos() {
+  $("tab-board").innerHTML = `<h2 class="row" style="justify-content:space-between">Family photos <a href="#" data-addph="1" class="hlink">+ Add</a></h2><div id="allPhotos" class="phgrid"><div class="sub">Loading…</div></div><button class="btn ghost" data-back="1">Back</button>`;
+  window.scrollTo(0, 0);
+  $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+  const { data } = await db.from("photos").select("id,path,caption,taken_on,show_on_board,uploaded_by,created_at").order("created_at", { ascending: false }).limit(300);
+  const rows = data || [];
+  const urls = await signPhotos(rows);
+  photoRows = rows.map((r) => ({ ...r, url: urls[r.path] }));
+  $("allPhotos").innerHTML = photoRows.length
+    ? photoRows.map((r) => `<button class="ph" data-ph="${r.id}" style="background-image:url('${esc(r.url ?? "")}')">${r.show_on_board ? "" : `<span class="phtag">Not on TV</span>`}</button>`).join("")
+    : `<div class="card sub center" style="grid-column:1/-1">No photos yet.</div>`;
+}
+function openPhoto(r) {
+  const mineOrAdmin = r.uploaded_by === me.id || member?.role === "admin";
+  const by = people[r.uploaded_by]?.display_name ?? "Someone";
+  let h = `<div class="card" style="padding:10px"><img src="${esc(r.url ?? "")}" alt="" style="width:100%;border-radius:12px;display:block">
+    <div class="sub" style="margin:10px 4px 0">${r.caption ? esc(r.caption) + " · " : ""}Added by ${esc(by)} · ${fmtDate(localISO(new Date(r.created_at)))}</div></div>`;
+  if (mineOrAdmin) {
+    h += `<label for="phCap">Caption</label><input id="phCap" maxlength="80" value="${esc(r.caption ?? "")}" placeholder="Lake trip, Brock's first deer…">
+      <div class="check"><input type="checkbox" id="phTv" ${r.show_on_board ? "checked" : ""}><label for="phTv" style="margin:0;color:var(--text)">Show on the TV</label></div>
+      <button class="btn" id="phSave">Save</button>
+      <button class="btn ghost" id="phDel" style="color:var(--red)">Delete photo</button>`;
+  }
+  h += `<button class="btn ghost" data-allph="1">Back to photos</button><div class="err" id="phErr"></div>`;
+  $("tab-board").innerHTML = h;
+  window.scrollTo(0, 0);
+  $("phSave")?.addEventListener("click", async () => {
+    const { error } = await db.from("photos").update({ caption: $("phCap").value.trim() || null, show_on_board: $("phTv").checked }).eq("id", r.id);
+    if (error) return ($("phErr").textContent = "Couldn't save: " + error.message);
+    openAllPhotos();
+  });
+  $("phDel")?.addEventListener("click", async () => {
+    if (!confirm("Delete this photo for everyone? This can't be undone.")) return;
+    const { error } = await db.from("photos").delete().eq("id", r.id);
+    if (error) return ($("phErr").textContent = "Couldn't delete: " + error.message);
+    await db.storage.from("family-photos").remove([r.path]);
+    openAllPhotos();
+  });
+}
+// shrink big phone photos before uploading (long side 1920px, JPEG)
+function scaledJpeg(file, max = 1920) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+      const c = document.createElement("canvas");
+      c.width = Math.round(img.naturalWidth * k); c.height = Math.round(img.naturalHeight * k);
+      c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error("Couldn't read that image"))), "image/jpeg", 0.85);
+      URL.revokeObjectURL(img.src);
+    };
+    img.onerror = () => reject(new Error("Couldn't read that image"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+const photoPicker = Object.assign(document.createElement("input"), { type: "file", accept: "image/*", multiple: true });
+photoPicker.style.display = "none";
+document.body.appendChild(photoPicker);
+photoPicker.addEventListener("change", async () => {
+  const files = [...(photoPicker.files || [])];
+  photoPicker.value = "";
+  if (!files.length) return;
+  const status = (t) => { const el = $("homePhotos") || $("allPhotos"); if (el) el.innerHTML = `<div class="sub" style="grid-column:1/-1">${esc(t)}</div>`; };
+  let done = 0, failed = 0;
+  for (const f of files) {
+    status(`Uploading ${done + failed + 1} of ${files.length}…`);
+    try {
+      const blob = await scaledJpeg(f);
+      const path = `${me.id}/photos/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
+      const up = await db.storage.from("family-photos").upload(path, blob, { contentType: "image/jpeg" });
+      if (up.error) throw up.error;
+      const { error } = await db.from("photos").insert({ path, uploaded_by: me.id, taken_on: f.lastModified ? localISO(new Date(f.lastModified)) : null });
+      if (error) { await db.storage.from("family-photos").remove([path]); throw error; }
+      done++;
+    } catch { failed++; }
+  }
+  if (failed) alert(`${done} uploaded, ${failed} couldn't be read. (Some iPhone photos need "Most Compatible" camera format.)`);
+  if ($("allPhotos")) openAllPhotos(); else loadBoard();
+});
+
 function fmtShort(iso) { return new Date(iso + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" }); }
 
 function itemRow(i) {
@@ -395,6 +494,10 @@ async function markShare(i, how) {
 
 $("tab-board").addEventListener("click", async (e) => {
   if (e.target.closest("[data-addev]")) { e.preventDefault(); return openEvent({}); }
+  if (e.target.closest("[data-addph]")) { e.preventDefault(); return photoPicker.click(); }
+  if (e.target.closest("[data-allph]")) { e.preventDefault(); return openAllPhotos(); }
+  const phBtn = e.target.closest("[data-ph]");
+  if (phBtn) { const r = photoRows.find((x) => x.id === phBtn.dataset.ph); if (r) openPhoto(r); return; }
   if (e.target.closest("[data-allev]")) { e.preventDefault(); return openAllEvents(); }
   const evRow = e.target.closest("[data-ev]");
   if (evRow) {
