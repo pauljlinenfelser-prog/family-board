@@ -232,7 +232,7 @@ function weekStrip(events, open, today) {
     list.push({ day: evDay(e) < today ? today : evDay(e), color: p?.color ?? "#8A919E", ev: e,
       text: `${p?.display_name ?? "Someone"}${e.kind === "away" ? " away" : ""} · ${e.title}`, when });
   }
-  for (const i of open) if (i.due >= today && i.due <= days[6]) list.push({ day: i.due, color: "#F2C14E", text: `${i.name} due`, when: fmtShort(i.due) });
+  for (const i of open) if (i.due >= today && i.due <= days[6]) list.push({ day: i.due, color: "#F2C14E", text: `${i.name} due`, when: fmtShort(i.due), billId: i.billId || i.personalId });
   list.sort((a, b) => a.day.localeCompare(b.day));
   weekEvents = list.filter((x) => x.ev).map((x) => x.ev);
   let h = `<h2 class="row" style="justify-content:space-between">This week <span><a href="#" data-allev="1" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:600;margin-right:14px">See all</a><a href="#" data-addev="1" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:600">+ Add</a></span></h2><div class="card"><div class="week">` + days.map((d) => {
@@ -241,7 +241,7 @@ function weekStrip(events, open, today) {
       <div class="wnum">${Number(d.slice(8))}</div><div class="wdots">${dots.map((c) => `<i style="background:${esc(c)}"></i>`).join("")}</div></div>`;
   }).join("") + `</div>`;
   h += list.length
-    ? list.slice(0, 6).map((x) => `<div class="wev" ${x.ev ? `data-ev="${x.ev.id}" style="cursor:pointer"` : ""}><i style="background:${esc(x.color)}"></i><span class="sub" style="width:74px;margin:0">${esc(x.when)}</span><span>${esc(x.text)}</span></div>`).join("")
+    ? list.slice(0, 6).map((x) => `<div class="wev" ${x.ev ? `data-ev="${x.ev.id}" style="cursor:pointer"` : x.billId ? `data-billid="${x.billId}" style="cursor:pointer"` : ""}><i style="background:${esc(x.color)}"></i><span class="sub" style="width:74px;margin:0">${esc(x.when)}</span><span>${esc(x.text)}</span></div>`).join("")
     : `<div class="sub" style="margin-top:10px">Nothing on the calendar this week.</div>`;
   return h + `</div>`;
 }
@@ -359,7 +359,7 @@ async function openMonth(monthIso, pickDay) {
     return `<div class="wev" ${canEditEvent(e) ? `data-ev="${e.id}" style="cursor:pointer"` : ""}><i style="background:${esc(p?.color ?? "#8A919E")}"></i>
       <span class="sub" style="width:74px;margin:0">${esc(time)}</span><span>${esc(p?.display_name ?? "Someone")}${e.kind === "away" ? " away" : ""} · ${esc(e.title)}${e.notes ? `<span class="sub"> · ${esc(e.notes)}</span>` : ""}</span></div>`;
   }).join("") : `<div class="sub">Nothing on the calendar.</div>`;
-  if (it.bl.length) h += it.bl.map((b) => `<div class="wev"><i style="background:${b.paid ? "#7D8594" : "#F2C14E"}"></i>
+  if (it.bl.length) h += it.bl.map((b) => `<div class="wev" data-billid="${b.id}" style="cursor:pointer"><i style="background:${b.paid ? "#7D8594" : "#F2C14E"}"></i>
       <span class="sub" style="width:74px;margin:0">${b.paid ? "Paid" : "Due"}</span><span>${esc(b.name)} · ${money(b.amount)}${b.owner_id ? ` <span class="sub">(${esc(people[b.owner_id]?.display_name ?? "personal")})</span>` : ""}</span></div>`).join("");
   h += `</div><button class="btn ghost" id="calBack">Back to Home</button>`;
   $("tab-board").innerHTML = h;
@@ -651,7 +651,35 @@ function payBox(info) {
       <div style="font-weight:700;letter-spacing:1px">${esc(info.account_number)}</div></div>
       <button type="button" class="chip" data-copy="${esc(info.account_number)}" style="border:0;min-height:36px;padding:0 14px">Copy</button></div>`;
   if (url) h += `<div class="sub" style="margin-top:8px">After paying on the website, come back and mark it paid.</div>`;
+  if (!url && !info.account_number && info.id) {
+    const canEdit = info.owner_id ? info.owner_id === me.id : canManage();
+    h += `<div class="sub" style="margin-top:12px">No payment link saved for this bill yet.</div>`;
+    if (canEdit) h += `<button type="button" class="btn ghost" data-addlink="${info.id}">+ Add a payment link</button>`;
+  }
   return h;
+}
+
+// ---------- open any bill from anywhere (P25) ----------
+const BILL_FIELDS = "id,name,amount,due_date,paid,owner_id,admin_id,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,pay_url,account_number,autopay,pay_note";
+async function openBillById(id) {
+  const { data: b } = await db.from("bills").select(BILL_FIELDS).eq("id", id).maybeSingle();
+  if (!b) return;
+  const { data: sh } = await db.from("bill_share_amounts").select("id,share_amount,paid,paid_method,confirmed").eq("bill_id", id).eq("member_id", me.id).maybeSingle();
+  if (!document.querySelector('nav button[data-tab="board"]').classList.contains("on")) document.querySelector('nav button[data-tab="board"]').click();
+  if (sh) return openShare({ shareId: sh.id, billId: id, name: b.name, amount: Number(sh.share_amount), billAmount: Number(b.amount),
+    paid: sh.paid, method: sh.paid_method, confirmed: sh.confirmed, due: b.due_date, kind: "household", info: b });
+  if (b.owner_id === me.id) return openShare({ personalId: b.id, bill: b, name: b.name, amount: Number(b.amount), paid: b.paid, due: b.due_date,
+    kind: b.show_on_board ? "personal" : "private", info: b });
+  openHelp(b);
+}
+// jump to the Bills tab and open that bill's editor
+async function editBillById(id) {
+  document.querySelector('nav button[data-tab="bills"]').click();
+  for (let n = 0; n < 40; n++) {
+    const el = document.querySelector(`[data-edit="${id}"], [data-mine="${id}"]`);
+    if (el) { el.click(); setTimeout(() => $("bPayUrl")?.scrollIntoView({ block: "center" }), 150); $("bPayUrl")?.focus(); return; }
+    await new Promise((r) => setTimeout(r, 100));
+  }
 }
 document.addEventListener("click", async (e) => {
   const c = e.target.closest("[data-copy]");
@@ -664,9 +692,9 @@ document.addEventListener("click", async (e) => {
 // ---------- "could use a hand" (P21): help pay someone else's bill ----------
 function openHelp(b) {
   const owner = people[b.owner_id];
-  const admin = people[b.admin_id] || owner;
+  const admin = people[b.admin_id] || owner || payee();
   const d = daysUntil(b.due_date);
-  let h = `<h2>${esc(owner?.display_name ?? "Someone")}'s ${esc(b.name)}</h2><div class="card">
+  let h = `<h2>${owner ? esc(owner.display_name) + "'s " : ""}${esc(b.name)}</h2><div class="card">
     <div class="sub">${d < 0 ? `${-d} day${d === -1 ? "" : "s"} overdue` : dueLabel(b.due_date)}</div><div class="big">${money(b.amount)}</div>`;
   if (admin && admin.id !== me.id) {
     h += `<label for="helpAmt">How much do you want to send ${esc(admin.display_name)}?</label>
@@ -719,10 +747,8 @@ function openShare(i) {
       <div class="sub">${i.paid ? "Paid ✓" : dueLabel(i.due)}</div>`;
     h += i.paid ? `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — not paid yet</button>`
       : `<button class="btn" data-pay="direct">Mark paid</button>`;
-    if (i.info.website) h += `<a class="btn ghost" href="https://${esc(i.info.website)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none">Open ${esc(i.info.website)}</a>`;
     h += payBox(i.info);
-    h += payBox(i.info);
-  h += viewBillButton(i.info, i.name);
+    h += viewBillButton(i.info, i.name);
     h += `<button class="btn ghost" data-back="1">Back</button><div class="err" id="shareErr"></div></div>`;
     $("tab-board").innerHTML = h;
     window.scrollTo(0, 0);
@@ -745,6 +771,7 @@ function openShare(i) {
   } else if (!i.confirmed) {
     h += `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — I haven't paid this yet</button>`;
   }
+  h += payBox(i.info);
   h += viewBillButton(i.info, i.name);
   h += `<button class="btn ghost" data-back="1">Back</button><div class="err" id="shareErr"></div></div>`;
   $("tab-board").innerHTML = h;
@@ -770,6 +797,10 @@ async function markShare(i, how) {
 }
 
 $("tab-board").addEventListener("click", async (e) => {
+  const billLink = e.target.closest("[data-billid]");
+  if (billLink) { e.preventDefault(); return openBillById(billLink.dataset.billid); }
+  const addLink = e.target.closest("[data-addlink]");
+  if (addLink) { e.preventDefault(); return editBillById(addLink.dataset.addlink); }
   const helpRow = e.target.closest("[data-help]");
   if (helpRow) { const b = helpBills.find((x) => x.id === helpRow.dataset.help); if (b) openHelp(b); return; }
   if (e.target.closest("[data-addev]")) { e.preventDefault(); return openEvent({}); }
