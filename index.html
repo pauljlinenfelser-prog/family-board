@@ -39,6 +39,9 @@
   .note-body { font-size:16px; line-height:1.45; white-space: pre-wrap; }
   .err { color: var(--red); font-size: 14px; margin-top: 10px; min-height: 18px; }
   .center { text-align:center; }
+  .logo { width:44px; height:44px; flex:none; border-radius:10px; background: var(--card) center/cover no-repeat; display:flex; align-items:center; justify-content:center; font-weight:700; color: var(--muted); }
+  .logo-pick { background: var(--card); border:2px solid transparent; border-radius:14px; padding:8px; color: var(--text); font-size:12px; text-align:center; }
+  .logo-pick img { width:64px; height:64px; border-radius:14px; display:block; margin:0 auto 6px; }
   .chip { display:inline-block; padding:2px 10px; border-radius:10px; background: var(--card); font-size:12px; color: var(--muted); }
   .hidden { display:none !important; }
   .sw { width:44px; height:44px; border-radius:22px; border:3px solid transparent; }
@@ -124,6 +127,16 @@
         </div>
         <label for="bSite">Company website (optional)</label>
         <input id="bSite" placeholder="consumersenergy.com" autocapitalize="off" inputmode="url">
+        <label>Logo</label>
+        <div class="row">
+          <div id="bLogo" class="logo"></div>
+          <button class="btn ghost" id="pickLogo" type="button" style="margin:0;flex:1">Pick app logo</button>
+          <button class="btn ghost hidden" id="clearLogo" type="button" style="margin:0;width:auto;padding:0 14px">Remove</button>
+        </div>
+        <div id="logoPicker" class="hidden" style="margin-top:10px">
+          <div class="row"><input id="logoQuery" placeholder="Company or app name" style="flex:1"><button class="btn" id="logoSearch" type="button" style="margin:0;width:auto;padding:0 16px">Search</button></div>
+          <div id="logoResults" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px"></div>
+        </div>
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
           <div><label for="bRepeat">Repeats</label>
             <select id="bRepeat">
@@ -181,7 +194,7 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P9</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P10</p>
   </main>
 
   <nav>
@@ -192,6 +205,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P9"></script>
+<script type="module" src="app.js?v=P10"></script>
 </body>
 </html>

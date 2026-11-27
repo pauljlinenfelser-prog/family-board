@@ -386,7 +386,7 @@ async function loadBills() {
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
   const [bills, shares, sample] = await Promise.all([
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,paid,next_bill_id").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("id,bill_id,member_id,percent,fixed_amount,paid,paid_method,paid_on,confirmed"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
   ]);
@@ -403,6 +403,7 @@ async function loadBills() {
     const d = daysUntil(b.due_date);
     const cls = b.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
     return `<div class="card row" ${canManage() ? `data-edit="${b.id}" style="cursor:pointer"` : ""}>
+      ${logoTile(b)}
       <div class="grow"><div class="name">${esc(b.name)}</div>
       <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${repeatLabel(b) ? " · " + repeatLabel(b) : ""}</div>
       <div class="sub">${who.length ? "Split: " + esc(who.join(", ")) + ` · ${(byBill[b.id] || []).filter((s) => s.paid).length} of ${who.length} paid` : "Not split yet"}</div></div>
@@ -452,6 +453,11 @@ function openEditor(bill, shares) {
   $("bAmount").value = bill.amount ?? "";
   $("bDue").value = bill.due_date ?? localISO(new Date(Date.now() + 14 * 86400000));
   $("bSite").value = bill.website ?? "";
+  logoUrl = bill.logo_url ?? null;
+  paintLogo();
+  $("logoPicker").classList.add("hidden");
+  $("logoResults").innerHTML = "";
+  $("logoQuery").value = "";
   $("bRepeat").value = bill.repeat_kind ?? "monthly";
   $("bDays").value = bill.repeat_days ?? "";
   $("bPaid").checked = !!bill.paid;
@@ -474,6 +480,50 @@ function openEditor(bill, shares) {
   drawWhoPaid(shares);
   window.scrollTo(0, 0);
 }
+
+// ---------- bill logos (P10): pick an app icon from Apple's App Store search ----------
+let logoUrl = null;
+function logoTile(b) {
+  if (b.logo_url) return `<div class="logo" style="background-image:url('${esc(b.logo_url)}')"></div>`;
+  return `<div class="logo">${esc((b.name || "?").slice(0, 1).toUpperCase())}</div>`;
+}
+function paintLogo() {
+  const el = $("bLogo");
+  el.style.backgroundImage = logoUrl ? `url('${logoUrl}')` : "";
+  el.textContent = logoUrl ? "" : ($("bName").value || "?").slice(0, 1).toUpperCase();
+  $("clearLogo").classList.toggle("hidden", !logoUrl);
+}
+async function searchLogos() {
+  const q = $("logoQuery").value.trim();
+  if (!q) return;
+  $("logoResults").innerHTML = `<div class="sub">Searching…</div>`;
+  try {
+    const r = await fetch(`https://itunes.apple.com/search?entity=software&country=us&limit=9&term=${encodeURIComponent(q)}`);
+    const results = (await r.json()).results || [];
+    if (!results.length) return ($("logoResults").innerHTML = `<div class="sub" style="grid-column:1/-1">No apps found. Try a shorter name.</div>`);
+    $("logoResults").innerHTML = results.map((a) => {
+      const url = String(a.artworkUrl512 || a.artworkUrl100 || "").replace(/\/\d+x\d+bb\.(jpg|png)$/, "/256x256bb.$1");
+      return `<button type="button" class="logo-pick" data-logo="${esc(url)}"><img src="${esc(a.artworkUrl100)}" alt="">${esc(a.trackName)}</button>`;
+    }).join("");
+  } catch {
+    $("logoResults").innerHTML = `<div class="sub" style="grid-column:1/-1">Couldn't search right now. Check the internet and try again.</div>`;
+  }
+}
+$("pickLogo").addEventListener("click", () => {
+  $("logoPicker").classList.toggle("hidden");
+  if (!$("logoQuery").value) $("logoQuery").value = $("bName").value.trim();
+  if (!$("logoPicker").classList.contains("hidden") && $("logoQuery").value) searchLogos();
+});
+$("logoSearch").addEventListener("click", searchLogos);
+$("logoQuery").addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); searchLogos(); } });
+$("logoResults").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-logo]");
+  if (!b) return;
+  logoUrl = b.dataset.logo;
+  paintLogo();
+  $("logoPicker").classList.add("hidden");
+});
+$("clearLogo").addEventListener("click", () => { logoUrl = null; paintLogo(); });
 
 // ---------- who has paid their share (P9): the admin can mark each person ----------
 function drawWhoPaid(shares) {
@@ -564,7 +614,7 @@ $("saveBill").addEventListener("click", async () => {
   const repeat_kind = $("bRepeat").value;
   const repeat_days = repeat_kind === "days" ? parseInt($("bDays").value, 10) : null;
   if (repeat_kind === "days" && !(repeat_days >= 1 && repeat_days <= 365)) return ($("billErr").textContent = "Enter how many days between bills (1 to 365).");
-  const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, owner_id: null };
+  const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, logo_url: logoUrl, owner_id: null };
   let billId = editing.id;
   if (billId) {
     const { error } = await db.from("bills").update(fields).eq("id", billId);
