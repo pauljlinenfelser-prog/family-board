@@ -385,10 +385,11 @@ async function loadBills() {
   $("billEditor").classList.add("hidden");
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
-  const [bills, shares, sample] = await Promise.all([
+  const [bills, shares, sample, mine] = await Promise.all([
     db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("id,bill_id,member_id,percent,fixed_amount,paid,paid_method,paid_on,confirmed"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
   ]);
   const byBill = {};
   (shares.data || []).forEach((s) => (byBill[s.bill_id] ??= []).push(s));
@@ -412,9 +413,28 @@ async function loadBills() {
   if (pastDue.length) html += `<h2 class="late">Past due</h2>` + pastDue.map(billRow).join("") + `<h2>This month &amp; coming up</h2>`;
   html += current.length ? current.map(billRow).join("") : `<div class="card sub">No household bills this month yet.</div>`;
   if (canManage()) html += `<p class="sub center">Tap a bill to edit it.</p>`;
+
+  // ---- my own bills (P11) ----
+  const myRows = mine.data || [];
+  html += `<h2>My bills</h2><button class="btn ghost" id="newMine" style="margin:0 0 12px">+ Add a personal bill</button>`;
+  html += myRows.length ? myRows.map((b) => {
+    const d = daysUntil(b.due_date);
+    const cls = b.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
+    return `<div class="card row" data-mine="${b.id}" style="cursor:pointer">
+      ${logoTile(b)}
+      <div class="grow"><div class="name">${esc(b.name)}</div>
+      <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${repeatLabel(b) ? " · " + repeatLabel(b) : ""}</div>
+      <div class="sub">${b.show_on_board ? "On the family board" : "🔒 Private — only you see this"}</div></div>
+      <div class="amt">${money(b.amount)}</div></div>`;
+  }).join("") : `<div class="card sub">No personal bills yet. Add things only you pay (phone, car, card…).</div>`;
+
   if (member?.role === "admin" && sample.count) html += `<button class="btn ghost" id="clearSample" style="margin-top:20px">Remove the sample data (${sample.count} sample bills)</button>`;
   $("billsList").innerHTML = html;
   $("newBill")?.addEventListener("click", () => openEditor({}, []));
+  $("newMine").addEventListener("click", () => openEditor({ owner_id: me.id, show_on_board: true }, []));
+  document.querySelectorAll("[data-mine]").forEach((el) => el.addEventListener("click", () => {
+    openEditor(myRows.find((r) => r.id === el.dataset.mine), []);
+  }));
   document.querySelectorAll("[data-edit]").forEach((el) => el.addEventListener("click", () => {
     const b = rows.find((r) => r.id === el.dataset.edit);
     openEditor(b, byBill[b.id] || []);
@@ -448,7 +468,11 @@ function openEditor(bill, shares) {
   editing = bill;
   $("billsList").classList.add("hidden");
   $("billEditor").classList.remove("hidden");
-  $("editorTitle").textContent = bill.id ? "Edit household bill" : "New household bill";
+  const personal = !!bill.owner_id;
+  $("editorTitle").textContent = (bill.id ? "Edit " : "New ") + (personal ? "personal bill" : "household bill");
+  $("splitBox").classList.toggle("hidden", personal);
+  $("personalBox").classList.toggle("hidden", !personal);
+  $("bShow").checked = bill.show_on_board ?? true;
   $("bName").value = bill.name ?? "";
   $("bAmount").value = bill.amount ?? "";
   $("bDue").value = bill.due_date ?? localISO(new Date(Date.now() + 14 * 86400000));
@@ -477,7 +501,7 @@ function openEditor(bill, shares) {
   }).join("");
   document.querySelectorAll("#splitPeople input, #bMethod, #bAmount").forEach((el) => el.addEventListener("input", updateSplit));
   updateSplit();
-  drawWhoPaid(shares);
+  drawWhoPaid(personal ? [] : shares);
   window.scrollTo(0, 0);
 }
 
@@ -602,11 +626,12 @@ $("saveBill").addEventListener("click", async () => {
   const amount = parseFloat(String($("bAmount").value).replace(/[$,]/g, ""));
   const due = $("bDue").value;
   const method = $("bMethod").value;
-  const rows = splitRows();
+  const personal = !!editing.owner_id;
+  const rows = personal ? [] : splitRows();
   if (!name) return ($("billErr").textContent = "Give the bill a name.");
   if (!(amount >= 0)) return ($("billErr").textContent = "Enter the amount, like 186.00");
   if (!due) return ($("billErr").textContent = "Pick a due date.");
-  if (!rows.length) return ($("billErr").textContent = "Pick at least one person to split with.");
+  if (!personal && !rows.length) return ($("billErr").textContent = "Pick at least one person to split with.");
   if (method === "percent" && Math.abs(rows.reduce((t, r) => t + r.val, 0) - 100) > 0.01) return ($("billErr").textContent = "Percents need to add up to 100.");
   if (method === "fixed" && Math.abs(rows.reduce((t, r) => t + r.val, 0) - amount) > 0.009) return ($("billErr").textContent = "Fixed amounts need to add up to the bill amount.");
 
@@ -615,6 +640,7 @@ $("saveBill").addEventListener("click", async () => {
   const repeat_days = repeat_kind === "days" ? parseInt($("bDays").value, 10) : null;
   if (repeat_kind === "days" && !(repeat_days >= 1 && repeat_days <= 365)) return ($("billErr").textContent = "Enter how many days between bills (1 to 365).");
   const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, logo_url: logoUrl, owner_id: null };
+  if (personal) Object.assign(fields, { owner_id: me.id, show_on_board: $("bShow").checked, split_method: "equal" });
   let billId = editing.id;
   if (billId) {
     const { error } = await db.from("bills").update(fields).eq("id", billId);
@@ -624,7 +650,8 @@ $("saveBill").addEventListener("click", async () => {
     if (error) return ($("billErr").textContent = "Couldn't save: " + error.message);
     billId = data.id;
   }
-  // shares: keep paid status for people who stay on the bill
+  // shares: keep paid status for people who stay on the bill (household bills only)
+  if (!personal) {
   const keepIds = rows.map((r) => r.id);
   const { data: existing } = await db.from("bill_shares").select("member_id").eq("bill_id", billId);
   const drop = (existing || []).map((e) => e.member_id).filter((id) => !keepIds.includes(id));
@@ -632,6 +659,7 @@ $("saveBill").addEventListener("click", async () => {
   const up = rows.map((r) => ({ bill_id: billId, member_id: r.id, percent: method === "percent" ? r.val : null, fixed_amount: method === "fixed" ? r.val : null }));
   const { error: shErr } = await db.from("bill_shares").upsert(up, { onConflict: "bill_id,member_id" });
   if (shErr) return ($("billErr").textContent = "Bill saved, but the split didn't: " + shErr.message);
+  }
   // paid is saved last, so a repeating bill's next copy gets the split saved above
   const paid = $("bPaid").checked;
   if (paid !== !!editing.paid) {

@@ -150,6 +150,11 @@
         </div>
         <div class="check"><input type="checkbox" id="bPaid"><label for="bPaid" style="margin:0;color:var(--text)">Paid in full</label></div>
         <div id="bPaidHint" class="sub" style="margin-top:4px"></div>
+        <div id="personalBox" class="hidden">
+          <div class="check"><input type="checkbox" id="bShow" checked><label for="bShow" style="margin:0;color:var(--text)">Show on family board</label></div>
+          <div class="sub" style="margin-top:4px">Turn this off to keep the bill private: only you will see it — not the TV, and not anyone else.</div>
+        </div>
+        <div id="splitBox">
         <label>Split between</label>
         <div id="splitPeople"></div>
         <label for="bMethod">How to split</label>
@@ -159,6 +164,7 @@
           <option value="fixed">Fixed amounts</option>
         </select>
         <div id="splitSummary" class="sub" style="margin-top:10px"></div>
+        </div>
         <div id="whoPaidBox" class="hidden">
           <label>Who has paid their share</label>
           <div id="whoPaid"></div>
@@ -194,7 +200,7 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P10</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P11</p>
   </main>
 
   <nav>
@@ -205,6 +211,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P10"></script>
+<script type="module" src="app.js?v=P11"></script>
 </body>
 </html>
