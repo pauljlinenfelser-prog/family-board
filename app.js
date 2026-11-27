@@ -105,7 +105,7 @@ async function loadBoard() {
     // this month's shares, plus unpaid ones from earlier months (past due)
     db.from("bill_share_amounts").select("id,bill_id,bill_name,bill_amount,share_amount,paid,paid_method,confirmed,due_date,member_id").eq("member_id", me.id)
       .or(`and(due_date.gte.${monthStart},due_date.lt.${nextMonth}),and(paid.eq.false,due_date.lt.${monthStart})`).order("due_date"),
-    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days").eq("owner_id", me.id)
+    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images").eq("owner_id", me.id)
       .or(`and(due_date.gte.${monthStart},due_date.lt.${nextMonth}),and(paid.eq.false,due_date.lt.${monthStart})`).order("due_date"),
     canManage()
       ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
@@ -116,7 +116,7 @@ async function loadBoard() {
   // logos + repeat info for the household bills behind my shares
   const billIds = [...new Set((shares.data || []).map((s) => s.bill_id))];
   const { data: shareBills } = billIds.length
-    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days").in("id", billIds)
+    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days,full_images").in("id", billIds)
     : { data: [] };
   const billInfo = Object.fromEntries((shareBills || []).map((b) => [b.id, b]));
 
@@ -410,6 +410,135 @@ photoPicker.addEventListener("change", async () => {
   if ($("allPhotos")) openAllPhotos(); else loadBoard();
 });
 
+// ---------- bill pages: photos or PDF pages (P15) ----------
+const PDFJS = "https://cdn.jsdelivr.net/npm/pdfjs-dist@4.10.38/build/";
+let pdfjsLib = null;
+async function loadPdfJs() {
+  if (pdfjsLib) return pdfjsLib;
+  pdfjsLib = await import(PDFJS + "pdf.min.mjs");
+  const boot = new Blob([`import "${PDFJS}pdf.worker.min.mjs";`], { type: "text/javascript" });
+  pdfjsLib.GlobalWorkerOptions.workerPort = new Worker(URL.createObjectURL(boot), { type: "module" });
+  return pdfjsLib;
+}
+async function pdfToJpegs(file, maxPages = 15) {
+  const lib = await loadPdfJs();
+  const doc = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+  const out = [];
+  for (let n = 1; n <= Math.min(doc.numPages, maxPages); n++) {
+    const page = await doc.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: 1600 / base.width });
+    const c = document.createElement("canvas"); c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+    const ctx = c.getContext("2d"); ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp }).promise;
+    out.push(await new Promise((res, rej) => c.toBlob((b) => (b ? res(b) : rej(new Error("page"))), "image/jpeg", 0.85)));
+  }
+  return { pages: out, total: doc.numPages };
+}
+const billFolder = (bill) => (bill.owner_id ? `${me.id}/bills/${bill.id}` : `household/${bill.id}`);
+async function signBillPages(paths) {
+  if (!paths?.length) return [];
+  const { data } = await db.storage.from("bill-media").createSignedUrls(paths, 3600);
+  const m = Object.fromEntries((data || []).filter((d) => d.signedUrl).map((d) => [d.path, d.signedUrl]));
+  return paths.map((pth) => m[pth]).filter(Boolean);
+}
+async function drawPages() {
+  const bill = editing || {};
+  const pages = bill.full_images || [];
+  $("addPages").classList.toggle("hidden", !bill.id);
+  $("pagesHint").textContent = bill.id ? (pages.length ? "Tap a page to see it full size. Pages save right away." : "Add a photo or screenshot of the bill, or a PDF.")
+    : "Save the bill first, then open it again to add its pages.";
+  if (!pages.length) { $("bPages").innerHTML = ""; return; }
+  const urls = await signBillPages(pages);
+  $("bPages").innerHTML = urls.map((u, k) => `<div class="ph" style="background-image:url('${esc(u)}')" data-page="${k}"><span class="pgn">${k + 1}</span><button type="button" class="pgx" data-delpage="${k}" aria-label="Remove page">×</button></div>`).join("");
+}
+async function savePages(bill, pages) {
+  const { error } = await db.from("bills").update({ full_images: pages }).eq("id", bill.id);
+  if (error) throw error;
+  bill.full_images = pages;
+}
+const pagePicker = Object.assign(document.createElement("input"), { type: "file", accept: "image/*,application/pdf", multiple: true });
+pagePicker.style.display = "none";
+document.body.appendChild(pagePicker);
+$("addPages").addEventListener("click", () => pagePicker.click());
+pagePicker.addEventListener("change", async () => {
+  const files = [...(pagePicker.files || [])];
+  pagePicker.value = "";
+  const bill = editing;
+  if (!files.length || !bill?.id) return;
+  const pages = [...(bill.full_images || [])];
+  const say = (t) => ($("pagesHint").textContent = t);
+  try {
+    for (const f of files) {
+      let blobs = [];
+      if (f.type === "application/pdf" || /\.pdf$/i.test(f.name)) {
+        say("Reading the PDF…");
+        const r = await pdfToJpegs(f);
+        blobs = r.pages;
+        if (r.total > r.pages.length) alert(`That PDF has ${r.total} pages; the first ${r.pages.length} were added.`);
+      } else {
+        blobs = [await scaledJpeg(f, 2000)];
+      }
+      for (const b of blobs) {
+        say(`Uploading page ${pages.length + 1}…`);
+        const path = `${billFolder(bill)}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}.jpg`;
+        const up = await db.storage.from("bill-media").upload(path, b, { contentType: "image/jpeg" });
+        if (up.error) throw up.error;
+        pages.push(path);
+        await savePages(bill, pages);
+      }
+    }
+    say("");
+  } catch (err) {
+    say("Couldn't add that: " + (err?.message || err));
+  }
+  drawPages();
+});
+$("bPages").addEventListener("click", async (e) => {
+  const bill = editing;
+  const del = e.target.closest("[data-delpage]");
+  if (del) {
+    e.stopPropagation();
+    if (!confirm("Remove this page from the bill?")) return;
+    const k = Number(del.dataset.delpage);
+    const pages = [...(bill.full_images || [])];
+    const [gone] = pages.splice(k, 1);
+    try { await savePages(bill, pages); await db.storage.from("bill-media").remove([gone]); } catch (err) { $("pagesHint").textContent = "Couldn't remove: " + err.message; }
+    return drawPages();
+  }
+  const pg = e.target.closest("[data-page]");
+  if (pg) openViewer(bill.full_images, bill.name || "Bill", Number(pg.dataset.page));
+});
+
+// full-screen page viewer (phone)
+async function openViewer(paths, title, startAt = 0) {
+  const v = $("viewer");
+  v.innerHTML = `<div class="vbar"><span>${esc(title)}</span><button class="btn ghost" id="vClose" style="width:auto;min-height:38px;margin:0;padding:0 16px">Close</button></div><div class="sub center" style="color:#ccc">Loading…</div>`;
+  v.classList.remove("hidden");
+  document.body.style.overflow = "hidden";
+  $("vClose").addEventListener("click", closeViewer);
+  const urls = await signBillPages(paths);
+  v.innerHTML = `<div class="vbar"><span>${esc(title)} · ${urls.length} page${urls.length === 1 ? "" : "s"}</span><button class="btn ghost" id="vClose" style="width:auto;min-height:38px;margin:0;padding:0 16px">Close</button></div>` +
+    urls.map((u, k) => `<img src="${esc(u)}" alt="Page ${k + 1}" id="vpage${k}">`).join("");
+  $("vClose").addEventListener("click", closeViewer);
+  if (startAt) setTimeout(() => $("vpage" + startAt)?.scrollIntoView(), 50);
+}
+function closeViewer() { $("viewer").classList.add("hidden"); $("viewer").innerHTML = ""; document.body.style.overflow = ""; }
+let viewerBills = {};
+function viewBillButton(info, name) {
+  const pages = info?.full_images || [];
+  if (!pages.length) return "";
+  const key = "v" + Math.random().toString(36).slice(2, 8);
+  viewerBills[key] = { pages, name };
+  return `<button class="btn ghost" data-viewbill="${key}">View the bill (${pages.length} page${pages.length === 1 ? "" : "s"})</button>`;
+}
+document.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-viewbill]");
+  if (!b) return;
+  const vb = viewerBills[b.dataset.viewbill];
+  if (vb) openViewer(vb.pages, vb.name);
+});
+
 function fmtShort(iso) { return new Date(iso + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" }); }
 
 function itemRow(i) {
@@ -447,6 +576,7 @@ function openShare(i) {
     h += i.paid ? `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — not paid yet</button>`
       : `<button class="btn" data-pay="direct">Mark paid</button>`;
     if (i.info.website) h += `<a class="btn ghost" href="https://${esc(i.info.website)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none">Open ${esc(i.info.website)}</a>`;
+    h += viewBillButton(i.info, i.name);
     h += `<button class="btn ghost" data-back="1">Back</button><div class="err" id="shareErr"></div></div>`;
     $("tab-board").innerHTML = h;
     window.scrollTo(0, 0);
@@ -469,6 +599,7 @@ function openShare(i) {
   } else if (!i.confirmed) {
     h += `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — I haven't paid this yet</button>`;
   }
+  h += viewBillButton(i.info, i.name);
   h += `<button class="btn ghost" data-back="1">Back</button><div class="err" id="shareErr"></div></div>`;
   $("tab-board").innerHTML = h;
   window.scrollTo(0, 0);
@@ -678,10 +809,10 @@ async function loadBills() {
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
   const [bills, shares, sample, mine] = await Promise.all([
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("id,bill_id,member_id,percent,fixed_amount,paid,paid_method,paid_on,confirmed"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
   ]);
   const byBill = {};
   (shares.data || []).forEach((s) => (byBill[s.bill_id] ??= []).push(s));
@@ -774,6 +905,7 @@ function openEditor(bill, shares) {
   $("logoPicker").classList.add("hidden");
   $("logoResults").innerHTML = "";
   $("logoQuery").value = "";
+  drawPages();
   $("bRepeat").value = bill.repeat_kind ?? "monthly";
   $("bDays").value = bill.repeat_days ?? "";
   $("bPaid").checked = !!bill.paid;
