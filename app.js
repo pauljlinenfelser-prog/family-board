@@ -110,7 +110,7 @@ async function loadBoard() {
     canManage()
       ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
       : Promise.resolve({ data: [] }),
-    db.from("events").select("title,kind,starts_at,ends_at,all_day,member_id").lte("starts_at", in7 + "T23:59:59")
+    db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes").lte("starts_at", in7 + "T23:59:59")
       .or(`starts_at.gte.${today},ends_at.gte.${today}`).order("starts_at").limit(30),
   ]);
   // logos + repeat info for the household bills behind my shares
@@ -209,21 +209,108 @@ function weekStrip(events, open, today) {
     if (evEnd(e) < today) continue;
     const p = people[e.member_id];
     const when = e.all_day ? fmtShort(evDay(e)) : fmtShort(evDay(e)) + " " + new Date(e.starts_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).replace(":00", "").toLowerCase();
-    list.push({ day: evDay(e) < today ? today : evDay(e), color: p?.color ?? "#8A919E",
+    list.push({ day: evDay(e) < today ? today : evDay(e), color: p?.color ?? "#8A919E", ev: e,
       text: `${p?.display_name ?? "Someone"}${e.kind === "away" ? " away" : ""} · ${e.title}`, when });
   }
   for (const i of open) if (i.due >= today && i.due <= days[6]) list.push({ day: i.due, color: "#F2C14E", text: `${i.name} due`, when: fmtShort(i.due) });
   list.sort((a, b) => a.day.localeCompare(b.day));
-  let h = `<h2>This week</h2><div class="card"><div class="week">` + days.map((d) => {
+  weekEvents = list.filter((x) => x.ev).map((x) => x.ev);
+  let h = `<h2 class="row" style="justify-content:space-between">This week <span><a href="#" data-allev="1" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:600;margin-right:14px">See all</a><a href="#" data-addev="1" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:600">+ Add</a></span></h2><div class="card"><div class="week">` + days.map((d) => {
     const dots = [...new Set(list.filter((x) => x.day === d).map((x) => x.color))].slice(0, 3);
     return `<div class="wday ${d === today ? "on" : ""}"><div class="sub">${new Date(d + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" })}</div>
       <div class="wnum">${Number(d.slice(8))}</div><div class="wdots">${dots.map((c) => `<i style="background:${esc(c)}"></i>`).join("")}</div></div>`;
   }).join("") + `</div>`;
   h += list.length
-    ? list.slice(0, 6).map((x) => `<div class="wev"><i style="background:${esc(x.color)}"></i><span class="sub" style="width:74px;margin:0">${esc(x.when)}</span><span>${esc(x.text)}</span></div>`).join("")
+    ? list.slice(0, 6).map((x) => `<div class="wev" ${x.ev ? `data-ev="${x.ev.id}" style="cursor:pointer"` : ""}><i style="background:${esc(x.color)}"></i><span class="sub" style="width:74px;margin:0">${esc(x.when)}</span><span>${esc(x.text)}</span></div>`).join("")
     : `<div class="sub" style="margin-top:10px">Nothing on the calendar this week.</div>`;
   return h + `</div>`;
 }
+// ---------- calendar events and away times (P13) ----------
+let weekEvents = [];
+const canEditEvent = (e) => !e.id || e.member_id === me.id || member?.role === "admin";
+const timeOf = (ts) => { const d = new Date(ts); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
+
+function openEvent(e) {
+  const isNew = !e.id;
+  const mineOnly = member?.role !== "admin";
+  const who = e.member_id ?? me.id;
+  const start = e.starts_at ? localISO(new Date(e.starts_at)) : localISO();
+  const end = e.ends_at ? localISO(new Date(e.ends_at)) : "";
+  const allDay = isNew ? true : !!e.all_day;
+  const fam = familyList().filter((p) => !mineOnly || p.id === me.id);
+  let h = `<h2>${isNew ? "Add to the calendar" : "Edit calendar entry"}</h2><div class="card">
+    <label style="margin-top:0">Who</label>
+    <select id="evWho" ${fam.length < 2 ? "disabled" : ""}>${fam.map((p) => `<option value="${p.id}" ${p.id === who ? "selected" : ""}>${esc(p.display_name)}</option>`).join("")}</select>
+    <label>What kind</label>
+    <select id="evKind"><option value="event">Event or appointment</option><option value="away" ${e.kind === "away" ? "selected" : ""}>Away (trip, work, out of town)</option></select>
+    <label for="evTitle">What</label>
+    <input id="evTitle" maxlength="60" placeholder="Dentist, hunting trip, work trip…" value="${esc(e.title ?? "")}">
+    <div class="check"><input type="checkbox" id="evAllDay" ${allDay ? "checked" : ""}><label for="evAllDay" style="margin:0;color:var(--text)">All day</label></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+      <div><label for="evStart">Starts</label><input id="evStart" type="date" value="${start}"></div>
+      <div class="evTime"><label for="evStartT">Time</label><input id="evStartT" type="time" value="${e.starts_at && !e.all_day ? timeOf(e.starts_at) : "09:00"}"></div>
+      <div><label for="evEnd">Ends (optional)</label><input id="evEnd" type="date" value="${end}"></div>
+      <div class="evTime"><label for="evEndT">Time</label><input id="evEndT" type="time" value="${e.ends_at && !e.all_day ? timeOf(e.ends_at) : ""}"></div>
+    </div>
+    <label for="evNotes">Notes (optional)</label>
+    <input id="evNotes" maxlength="200" value="${esc(e.notes ?? "")}">
+    <button class="btn" id="evSave">Save</button>
+    <button class="btn ghost" id="evBack">Cancel</button>
+    ${isNew ? "" : `<button class="btn ghost" id="evDel" style="color:var(--red)">Delete</button>`}
+    <div class="err" id="evErr"></div></div>`;
+  $("tab-board").innerHTML = h;
+  window.scrollTo(0, 0);
+  const showTimes = () => document.querySelectorAll(".evTime").forEach((el) => el.classList.toggle("hidden", $("evAllDay").checked));
+  $("evAllDay").addEventListener("change", showTimes); showTimes();
+  $("evBack").addEventListener("click", loadBoard);
+  $("evDel")?.addEventListener("click", async () => {
+    if (!confirm(`Delete "${e.title}"?`)) return;
+    const { error } = await db.from("events").delete().eq("id", e.id);
+    if (error) return ($("evErr").textContent = "Couldn't delete: " + error.message);
+    loadBoard();
+  });
+  $("evSave").addEventListener("click", async () => {
+    $("evErr").textContent = "";
+    const title = $("evTitle").value.trim();
+    const sd = $("evStart").value, ed = $("evEnd").value, all = $("evAllDay").checked;
+    if (!title) return ($("evErr").textContent = "Say what it is, like Dentist or Work trip.");
+    if (!sd) return ($("evErr").textContent = "Pick the start date.");
+    if (ed && ed < sd) return ($("evErr").textContent = "The end date is before the start date.");
+    const startsAt = new Date(`${sd}T${all ? "00:00" : $("evStartT").value || "09:00"}`);
+    let endsAt = null;
+    if (ed || (!all && $("evEndT").value)) endsAt = new Date(`${ed || sd}T${all ? "23:59" : $("evEndT").value || "23:59"}`);
+    if (endsAt && endsAt < startsAt) return ($("evErr").textContent = "It ends before it starts.");
+    const fields = { member_id: $("evWho").value, kind: $("evKind").value, title, all_day: all,
+      starts_at: startsAt.toISOString(), ends_at: endsAt ? endsAt.toISOString() : null, notes: $("evNotes").value.trim() || null };
+    const { error } = isNew ? await db.from("events").insert(fields) : await db.from("events").update(fields).eq("id", e.id);
+    if (error) return ($("evErr").textContent = "Couldn't save: " + error.message);
+    loadBoard();
+  });
+}
+
+async function openAllEvents() {
+  const today = localISO();
+  const { data } = await db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes")
+    .or(`starts_at.gte.${today},ends_at.gte.${today}`).order("starts_at").limit(100);
+  const rows = data || [];
+  weekEvents = rows;
+  let h = `<h2 class="row" style="justify-content:space-between">Coming up <a href="#" data-addev="1" style="color:var(--accent);text-transform:none;letter-spacing:0;font-weight:600">+ Add</a></h2>`;
+  h += rows.length ? rows.map((e) => {
+    const p = people[e.member_id];
+    const sd = localISO(new Date(e.starts_at)), ed = e.ends_at ? localISO(new Date(e.ends_at)) : sd;
+    let when = fmtDate(sd) + (ed !== sd ? " – " + fmtDate(ed) : "");
+    if (!e.all_day) when += " · " + new Date(e.starts_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
+    return `<div class="card row" ${canEditEvent(e) ? `data-ev="${e.id}" style="cursor:pointer"` : ""}>
+      <i style="width:10px;height:10px;border-radius:5px;flex:none;background:${esc(p?.color ?? "#8A919E")}"></i>
+      <div class="grow"><div class="name">${esc(p?.display_name ?? "Someone")}${e.kind === "away" ? " away" : ""} · ${esc(e.title)}</div>
+      <div class="sub">${esc(when)}${e.notes ? " · " + esc(e.notes) : ""}</div></div></div>`;
+  }).join("") : `<div class="card sub">Nothing on the calendar yet.</div>`;
+  h += `<button class="btn ghost" id="evAllBack">Back</button>`;
+  $("tab-board").innerHTML = h;
+  window.scrollTo(0, 0);
+  $("evAllBack").addEventListener("click", loadBoard);
+}
+
 function fmtShort(iso) { return new Date(iso + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" }); }
 
 function itemRow(i) {
@@ -307,6 +394,14 @@ async function markShare(i, how) {
 }
 
 $("tab-board").addEventListener("click", async (e) => {
+  if (e.target.closest("[data-addev]")) { e.preventDefault(); return openEvent({}); }
+  if (e.target.closest("[data-allev]")) { e.preventDefault(); return openAllEvents(); }
+  const evRow = e.target.closest("[data-ev]");
+  if (evRow) {
+    const ev = weekEvents.find((x) => x.id === evRow.dataset.ev);
+    if (ev && canEditEvent(ev)) openEvent(ev);
+    return;
+  }
   const row = e.target.closest("[data-card]");
   if (row) {
     if (row.classList.contains("wcard") && Number(row.style.zIndex) !== document.querySelectorAll("#tab-board .wcard").length) {
