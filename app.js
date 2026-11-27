@@ -688,7 +688,7 @@ $("noteForm").addEventListener("submit", async (e) => {
 });
 
 async function loadNotes() {
-  const { data, error } = await db.from("notes").select("id,body,pinned,private,created_at,author_id,to_member").order("pinned", { ascending: false }).order("created_at", { ascending: false }).limit(40);
+  const { data, error } = await db.from("notes").select("id,body,pinned,private,created_at,author_id,to_member,seen_at").order("pinned", { ascending: false }).order("created_at", { ascending: false }).limit(40);
   if (error) { $("noteList").innerHTML = `<div class="card sub">Couldn't load notes.</div>`; return; }
   $("noteList").innerHTML = (data || []).map((n) => {
     const a = people[n.author_id];
@@ -697,6 +697,7 @@ async function loadNotes() {
     const mine = n.author_id === me.id || member?.role === "admin";
     return `<div class="card"><div class="note-head"><span style="color:${esc(a?.color ?? "#A7ADB8")};font-weight:700">${esc(a?.display_name ?? "Someone")} → ${esc(to)}${n.private ? " 🔒" : ""}</span>
       <span class="sub" style="margin:0">${when}</span></div><div class="note-body">${esc(n.body)}</div>
+      ${n.seen_at ? `<div class="sub paid" style="margin-top:6px">Seen on TV ✓ · ${new Date(n.seen_at).toLocaleDateString("en-US", { month: "short", day: "numeric" })} — no longer shown on the TV</div>` : ""}
       ${mine ? `<button class="chip" data-del="${n.id}" style="margin-top:10px;border:0;min-height:32px">Delete</button>` : ""}</div>`;
   }).join("") || `<div class="card sub">No notes yet.</div>`;
   document.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", async () => {
