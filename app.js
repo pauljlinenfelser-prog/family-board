@@ -109,7 +109,7 @@ async function loadBoard() {
   const [shares, mine, toConfirm, events] = await Promise.all([
     db.from("bill_share_amounts").select("id,bill_id,bill_name,bill_amount,share_amount,paid,paid_method,confirmed,due_date,member_id").eq("member_id", me.id)
       .lte("due_date", in30).or(windowFilter).order("due_date"),
-    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images").eq("owner_id", me.id)
+    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,admin_id").eq("owner_id", me.id)
       .lte("due_date", in30).or(windowFilter).order("due_date"),
     canManage()
       ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
@@ -117,10 +117,13 @@ async function loadBoard() {
     db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes").lte("starts_at", in7 + "T23:59:59")
       .or(`starts_at.gte.${today},ends_at.gte.${today}`).order("starts_at").limit(30),
   ]);
+  const { data: others } = await db.from("bills").select("id,name,amount,due_date,owner_id,admin_id,logo_url,website,full_images")
+    .not("owner_id", "is", null).neq("owner_id", me.id).eq("paid", false).lte("due_date", in7).order("due_date");
+  helpBills = (others || []).filter((b) => people[b.owner_id]);
   // logos + repeat info for the household bills behind my shares
   const billIds = [...new Set((shares.data || []).map((s) => s.bill_id))];
   const { data: shareBills } = billIds.length
-    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days,full_images").in("id", billIds)
+    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days,full_images,admin_id").in("id", billIds)
     : { data: [] };
   const billInfo = Object.fromEntries((shareBills || []).map((b) => [b.id, b]));
 
@@ -163,6 +166,17 @@ async function loadBoard() {
     }).join("");
   }
 
+  if (helpBills.length) {
+    html += `<h2>Could use a hand</h2>`;
+    html += helpBills.map((b) => {
+      const d = daysUntil(b.due_date);
+      const who = people[b.owner_id];
+      const when = d < 0 ? `${-d} day${d === -1 ? "" : "s"} overdue` : d === 0 ? "due today" : `due in ${d} day${d === 1 ? "" : "s"}`;
+      return `<div class="card row" data-help="${b.id}" style="cursor:pointer">${logoTile(b)}
+        <div class="grow"><div class="name">${esc(who.display_name)} · ${esc(b.name)}</div>
+        <div class="sub ${d < 0 ? "late" : "soon"}">${when}</div></div><div class="amt">${money(b.amount)}</div></div>`;
+    }).join("");
+  }
   html += weekStrip(events.data || [], open, today);
 
   html += `<h2 class="row" style="justify-content:space-between">Family photos <span><a href="#" data-allph="1" class="hlink" style="margin-right:14px">See all</a><a href="#" data-addph="1" class="hlink">+ Add</a></span></h2>
@@ -549,31 +563,65 @@ function itemRow(i) {
   const d = daysUntil(i.due);
   const cls = i.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
   let status = i.paid ? "Paid ✓" : dueLabel(i.due);
-  if (i.paid && i.shareId) status = i.confirmed ? "Paid ✓ · confirmed" : `Paid · ${methodLabel(i.method)} · waiting for ${payee()?.display_name ?? "admin"} to confirm`;
+  if (i.paid && i.shareId) status = i.confirmed ? "Paid ✓ · confirmed" : `Paid · ${methodLabel(i.method, i.info)} · waiting for ${payeeFor(i.info)?.display_name ?? "admin"} to confirm`;
   const key = i.shareId ? "s:" + i.shareId : "p:" + i.personalId;
   return `<div class="card row" data-card="${key}" style="cursor:pointer"><div class="grow"><div class="name">${esc(i.name)}</div>
     <div class="sub ${cls}">${esc(status)}</div></div>
     <div class="amt ${i.paid ? "paid" : ""}">${money(i.amount)}</div></div>`;
 }
 
+// ---------- "could use a hand" (P21): help pay someone else's bill ----------
+function openHelp(b) {
+  const owner = people[b.owner_id];
+  const admin = people[b.admin_id] || owner;
+  const d = daysUntil(b.due_date);
+  let h = `<h2>${esc(owner?.display_name ?? "Someone")}'s ${esc(b.name)}</h2><div class="card">
+    <div class="sub">${d < 0 ? `${-d} day${d === -1 ? "" : "s"} overdue` : dueLabel(b.due_date)}</div><div class="big">${money(b.amount)}</div>`;
+  if (admin && admin.id !== me.id) {
+    h += `<label for="helpAmt">How much do you want to send ${esc(admin.display_name)}?</label>
+      <input id="helpAmt" inputmode="decimal" value="${Number(b.amount).toFixed(2)}">`;
+    if (admin.cashtag) {
+      h += `<a class="btn" id="helpCash" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none;background:#00D64F;color:#04210F">Send with Cash App</a>
+        <div class="sub center" style="margin-top:6px">Opens Cash App to ${esc(admin.display_name)} (${esc(admin.cashtag)}) with the amount filled in. You press Pay in Cash App.</div>`;
+    } else {
+      h += `<div class="sub" style="margin-top:10px">${esc(admin.display_name)} hasn't added a Cash App tag yet (Me tab).</div>`;
+    }
+    if (admin.phone) h += `<a class="btn ghost" id="helpText" style="display:flex;align-items:center;justify-content:center;text-decoration:none">💬 Text ${esc(admin.display_name)}</a>`;
+  }
+  h += viewBillButton(b, b.name);
+  h += `<button class="btn ghost" data-back="1">Back</button></div>`;
+  $("tab-board").innerHTML = h;
+  window.scrollTo(0, 0);
+  const refresh = () => {
+    const amt = parseFloat(String($("helpAmt")?.value || "").replace(/[$,]/g, "")) || 0;
+    if ($("helpCash")) { $("helpCash").href = cashAppLink(amt, admin) || "#"; $("helpCash").textContent = `Send ${money(amt)} with Cash App`; }
+    if ($("helpText")) $("helpText").href = smsLink(admin.phone, `Hey ${admin.display_name}, I saw ${b.name} on the Family Board (${money(b.amount)}). I can help with ${money(amt)} — sending it now.`);
+  };
+  $("helpAmt")?.addEventListener("input", refresh);
+  refresh();
+  $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+}
+
 // ---------- marking shares paid (P8) ----------
 let boardItems = [];
 // household shares are paid back to the admin
 const payee = () => Object.values(people).find((p) => p.role === "admin");
-function methodLabel(m) {
-  const who = payee()?.display_name ?? "admin";
+const payeeFor = (info) => (info && people[info.admin_id]) || payee();
+let helpBills = [];
+function methodLabel(m, info) {
+  const who = payeeFor(info)?.display_name ?? "admin";
   return { to_admin: `paid ${who}`, direct: "paid the company", cashapp: "Cash App", other: "other" }[m] ?? "paid";
 }
-function cashAppLink(amount) {
-  const tag = String(payee()?.cashtag ?? "").trim().replace(/^\$/, "");
+function cashAppLink(amount, person = payee()) {
+  const tag = String(person?.cashtag ?? "").trim().replace(/^\$/, "");
   if (!tag) return null;
   return `https://cash.app/$${encodeURIComponent(tag)}/${Number(amount).toFixed(2)}`;
 }
 
 function openShare(i) {
-  const pay = payee();
+  const pay = payeeFor(i.info);
   const iAmPayee = pay?.id === me.id;
-  const link = iAmPayee ? null : cashAppLink(i.amount);
+  const link = iAmPayee ? null : cashAppLink(i.amount, pay);
   if (i.personalId) {
     let h = `<h2>${esc(i.name)}</h2><div class="card"><div class="sub">Your bill</div><div class="big">${money(i.amount)}</div>
       <div class="sub">${i.paid ? "Paid ✓" : dueLabel(i.due)}</div>`;
@@ -590,7 +638,7 @@ function openShare(i) {
   }
   let h = `<h2>${esc(i.name)}</h2><div class="card">
     <div class="sub">Your share</div><div class="big">${money(i.amount)}</div>
-    <div class="sub">${i.paid ? (i.confirmed ? "Paid ✓ · confirmed" : "Paid · " + esc(methodLabel(i.method))) : dueLabel(i.due)}</div>`;
+    <div class="sub">${i.paid ? (i.confirmed ? "Paid ✓ · confirmed" : "Paid · " + esc(methodLabel(i.method, i.info))) : dueLabel(i.due)}</div>`;
   if (!i.paid) {
     if (link) h += `<a class="btn" href="${esc(link)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none;background:#00D64F;color:#04210F">Pay ${money(i.amount)} with Cash App</a>
       <div class="sub center" style="margin-top:6px">Opens Cash App to ${esc(pay.display_name)}. Come back and tap "I paid with Cash App".</div>`;
@@ -628,6 +676,8 @@ async function markShare(i, how) {
 }
 
 $("tab-board").addEventListener("click", async (e) => {
+  const helpRow = e.target.closest("[data-help]");
+  if (helpRow) { const b = helpBills.find((x) => x.id === helpRow.dataset.help); if (b) openHelp(b); return; }
   if (e.target.closest("[data-addev]")) { e.preventDefault(); return openEvent({}); }
   if (e.target.closest("[data-addph]")) { e.preventDefault(); return photoPicker.click(); }
   if (e.target.closest("[data-allph]")) { e.preventDefault(); return openAllPhotos(); }
@@ -882,10 +932,10 @@ async function loadBills() {
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
   const [bills, shares, sample, mine] = await Promise.all([
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images,admin_id").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("id,bill_id,member_id,percent,fixed_amount,paid,paid_method,paid_on,confirmed"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images,admin_id").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
   ]);
   const byBill = {};
   (shares.data || []).forEach((s) => (byBill[s.bill_id] ??= []).push(s));
@@ -969,6 +1019,8 @@ function openEditor(bill, shares) {
   $("splitBox").classList.toggle("hidden", personal);
   $("personalBox").classList.toggle("hidden", !personal);
   $("bShow").checked = bill.show_on_board ?? true;
+  const defAdmin = bill.admin_id ?? (personal ? me.id : payee()?.id ?? me.id);
+  $("bAdmin").innerHTML = familyList().map((p) => `<option value="${p.id}" ${p.id === defAdmin ? "selected" : ""}>${esc(p.display_name)}${p.id === me.id ? " (you)" : ""}</option>`).join("");
   $("bName").value = bill.name ?? "";
   $("bAmount").value = bill.amount ?? "";
   $("bDue").value = bill.due_date ?? localISO(new Date(Date.now() + 14 * 86400000));
@@ -1055,9 +1107,9 @@ function shareAmount(bill, share, shares) {
   return shares.length ? amt / shares.length : amt;
 }
 function reminderText(personName, billName, amount, due) {
-  const pay = payee();
+  const pay = payeeFor(editing);
   let t = `Hi ${personName}, reminder from the Family Board: your share of ${billName} is ${money(amount)}, ${daysUntil(due) < 0 ? "was due" : "due"} ${fmtDate(due)}.`;
-  const link = pay && pay.id === me.id ? cashAppLink(amount) : null;
+  const link = pay && pay.id === me.id ? cashAppLink(amount, pay) : null;
   if (link) t += ` Pay ${pay.display_name} with Cash App: ${link}`;
   return t + ` ${APP_URL}`;
 }
@@ -1068,7 +1120,7 @@ function drawWhoPaid(shares) {
   const saved = shares.filter((s) => s.id && people[s.member_id]);
   $("whoPaidBox").classList.toggle("hidden", !saved.length);
   if (!saved.length) return ($("whoPaid").innerHTML = "");
-  const who = payee()?.display_name ?? "admin";
+  const who = payeeFor(editing)?.display_name ?? "admin";
   const opts = [["", "Not paid"], ["to_admin", `Paid ${who}`], ["direct", "Paid the company"], ["cashapp", "Cash App"], ["other", "Other"]];
   $("whoPaid").innerHTML = saved.map((s) => {
     const p = people[s.member_id];
@@ -1170,7 +1222,7 @@ $("saveBill").addEventListener("click", async () => {
   const repeat_kind = $("bRepeat").value;
   const repeat_days = repeat_kind === "days" ? parseInt($("bDays").value, 10) : null;
   if (repeat_kind === "days" && !(repeat_days >= 1 && repeat_days <= 365)) return ($("billErr").textContent = "Enter how many days between bills (1 to 365).");
-  const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, logo_url: logoUrl, owner_id: null };
+  const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, logo_url: logoUrl, owner_id: null, admin_id: $("bAdmin").value || null };
   if (personal) Object.assign(fields, { owner_id: me.id, show_on_board: $("bShow").checked, split_method: "equal" });
   let billId = editing.id;
   if (billId) {

@@ -182,6 +182,8 @@
         </div>
         <div class="check"><input type="checkbox" id="bPaid"><label for="bPaid" style="margin:0;color:var(--text)">Paid in full</label></div>
         <div id="bPaidHint" class="sub" style="margin-top:4px"></div>
+        <label for="bAdmin">Bill administrator (gets paid / is responsible)</label>
+        <select id="bAdmin"></select>
         <div id="personalBox" class="hidden">
           <div class="check"><input type="checkbox" id="bShow" checked><label for="bShow" style="margin:0;color:var(--text)">Show on family board</label></div>
           <div class="sub" style="margin-top:4px">Turn this off to keep the bill private: only you will see it — not the TV, and not anyone else.</div>
@@ -242,7 +244,7 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P20</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P21</p>
   </main>
 
   <div id="viewer" class="hidden"></div>
@@ -254,6 +256,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P20"></script>
+<script type="module" src="app.js?v=P21"></script>
 </body>
 </html>
