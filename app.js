@@ -387,7 +387,7 @@ async function loadBills() {
   const monthStart = localISO().slice(0, 8) + "01";
   const [bills, shares, sample] = await Promise.all([
     db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,paid,next_bill_id").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
-    db.from("bill_shares").select("bill_id,member_id,percent,fixed_amount,paid"),
+    db.from("bill_shares").select("id,bill_id,member_id,percent,fixed_amount,paid,paid_method,paid_on,confirmed"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
   ]);
   const byBill = {};
@@ -405,7 +405,7 @@ async function loadBills() {
     return `<div class="card row" ${canManage() ? `data-edit="${b.id}" style="cursor:pointer"` : ""}>
       <div class="grow"><div class="name">${esc(b.name)}</div>
       <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${repeatLabel(b) ? " · " + repeatLabel(b) : ""}</div>
-      <div class="sub">${who.length ? "Split: " + esc(who.join(", ")) : "Not split yet"}</div></div>
+      <div class="sub">${who.length ? "Split: " + esc(who.join(", ")) + ` · ${(byBill[b.id] || []).filter((s) => s.paid).length} of ${who.length} paid` : "Not split yet"}</div></div>
       <div class="amt">${money(b.amount)}</div></div>`;
   };
   if (pastDue.length) html += `<h2 class="late">Past due</h2>` + pastDue.map(billRow).join("") + `<h2>This month &amp; coming up</h2>`;
@@ -471,7 +471,48 @@ function openEditor(bill, shares) {
   }).join("");
   document.querySelectorAll("#splitPeople input, #bMethod, #bAmount").forEach((el) => el.addEventListener("input", updateSplit));
   updateSplit();
+  drawWhoPaid(shares);
   window.scrollTo(0, 0);
+}
+
+// ---------- who has paid their share (P9): the admin can mark each person ----------
+function drawWhoPaid(shares) {
+  const saved = shares.filter((s) => s.id && people[s.member_id]);
+  $("whoPaidBox").classList.toggle("hidden", !saved.length);
+  if (!saved.length) return ($("whoPaid").innerHTML = "");
+  const who = payee()?.display_name ?? "admin";
+  const opts = [["", "Not paid"], ["to_admin", `Paid ${who}`], ["direct", "Paid the company"], ["cashapp", "Cash App"], ["other", "Other"]];
+  $("whoPaid").innerHTML = saved.map((s) => {
+    const p = people[s.member_id];
+    const cur = s.paid ? s.paid_method ?? "other" : "";
+    const note = s.paid && !s.confirmed
+      ? `<div class="sub soon" style="grid-column:1/-1">Marked paid by ${esc(p.display_name)} — <a href="#" data-okshare="${s.id}">confirm ✓</a></div>` : "";
+    return `<div class="split-row" style="grid-template-columns:1fr 170px">
+      <span style="color:${esc(p.color)};font-weight:600">${esc(p.display_name)}${s.paid && s.confirmed ? " ✓" : ""}</span>
+      <select data-paidshare="${s.id}">${opts.map(([v, t]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
+      ${note}</div>`;
+  }).join("");
+  const err = (m) => ($("billErr").textContent = m);
+  $("whoPaid").querySelectorAll("[data-paidshare]").forEach((sel) => sel.addEventListener("change", async () => {
+    const s = saved.find((x) => x.id === sel.dataset.paidshare);
+    const fields = sel.value
+      ? { paid: true, paid_method: sel.value, paid_on: s.paid_on ?? localISO(), confirmed: true }
+      : { paid: false, paid_method: null, paid_on: null, confirmed: false };
+    sel.disabled = true;
+    const { error } = await db.from("bill_shares").update(fields).eq("id", s.id);
+    sel.disabled = false;
+    if (error) return err("Couldn't save who paid: " + error.message);
+    Object.assign(s, fields);
+    drawWhoPaid(shares);
+  }));
+  $("whoPaid").querySelectorAll("[data-okshare]").forEach((a) => a.addEventListener("click", async (e) => {
+    e.preventDefault();
+    const s = saved.find((x) => x.id === a.dataset.okshare);
+    const { error } = await db.from("bill_shares").update({ confirmed: true }).eq("id", s.id);
+    if (error) return err("Couldn't confirm: " + error.message);
+    s.confirmed = true;
+    drawWhoPaid(shares);
+  }));
 }
 
 function splitRows() {
