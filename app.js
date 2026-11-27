@@ -63,9 +63,10 @@ async function start(user) {
 document.querySelectorAll("nav button").forEach((b) =>
   b.addEventListener("click", () => {
     document.querySelectorAll("nav button").forEach((x) => x.classList.toggle("on", x === b));
-    ["board", "notes", "me"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== b.dataset.tab));
+    ["board", "bills", "notes", "me"].forEach((t) => $("tab-" + t).classList.toggle("hidden", t !== b.dataset.tab));
     if (b.dataset.tab === "board") loadBoard();
     if (b.dataset.tab === "notes") loadNotes();
+    if (b.dataset.tab === "bills") loadBills();
   })
 );
 $("me").addEventListener("click", () => document.querySelector('nav button[data-tab="me"]').click());
@@ -112,7 +113,7 @@ async function loadBoard() {
           <div class="sub ${cls}">${dueLabel(b.due_date)} · ${esc(whose)}</div></div><div class="amt">${money(b.amount)}</div></div>`;
       }).join("")
     : `<div class="card sub">Nothing due in the next two weeks.</div>`;
-  html += `<p class="sub center" style="margin-top:20px">Adding bills and marking them paid come in the next versions.</p>`;
+  html += `<p class="sub center" style="margin-top:20px">Marking bills paid comes in the next version.</p>`;
   $("tab-board").innerHTML = html;
 }
 
@@ -267,6 +268,159 @@ $("removePhoto").addEventListener("click", async () => {
   member.avatar_path = null;
   fillProfile(); paintAvatar($("me"), member);
 });
+
+// ---------- household bills (P3) ----------
+const canManage = () => member?.role === "admin" || member?.bill_manager === true;
+let editing = null; // bill being edited, or {} for new
+
+async function loadBills() {
+  $("billEditor").classList.add("hidden");
+  $("billsList").classList.remove("hidden");
+  const monthStart = localISO().slice(0, 8) + "01";
+  const [bills, shares, sample] = await Promise.all([
+    db.from("bills").select("id,name,amount,due_date,repeats_monthly,split_method,website,paid").is("owner_id", null).gte("due_date", monthStart).order("due_date"),
+    db.from("bill_shares").select("bill_id,member_id,percent,fixed_amount,paid"),
+    db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
+  ]);
+  const byBill = {};
+  (shares.data || []).forEach((s) => (byBill[s.bill_id] ??= []).push(s));
+  let html = `<h2>Household bills</h2>`;
+  if (canManage()) html += `<button class="btn" id="newBill" style="margin:0 0 12px">+ Add a household bill</button>`;
+  const rows = bills.data || [];
+  html += rows.length ? rows.map((b) => {
+    const who = (byBill[b.id] || []).map((s) => people[s.member_id]?.display_name).filter(Boolean);
+    const d = daysUntil(b.due_date);
+    const cls = b.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
+    return `<div class="card row" ${canManage() ? `data-edit="${b.id}" style="cursor:pointer"` : ""}>
+      <div class="grow"><div class="name">${esc(b.name)}</div>
+      <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${b.repeats_monthly ? " · monthly" : ""}</div>
+      <div class="sub">${who.length ? "Split: " + esc(who.join(", ")) : "Not split yet"}</div></div>
+      <div class="amt">${money(b.amount)}</div></div>`;
+  }).join("") : `<div class="card sub">No household bills this month yet.</div>`;
+  if (canManage()) html += `<p class="sub center">Tap a bill to edit it.</p>`;
+  if (member?.role === "admin" && sample.count) html += `<button class="btn ghost" id="clearSample" style="margin-top:20px">Remove the sample data (${sample.count} sample bills)</button>`;
+  $("billsList").innerHTML = html;
+  $("newBill")?.addEventListener("click", () => openEditor({}, []));
+  document.querySelectorAll("[data-edit]").forEach((el) => el.addEventListener("click", () => {
+    const b = rows.find((r) => r.id === el.dataset.edit);
+    openEditor(b, byBill[b.id] || []);
+  }));
+  $("clearSample")?.addEventListener("click", clearSample);
+}
+
+function familyList() {
+  return Object.values(people).filter((p) => p.role !== "display");
+}
+
+function openEditor(bill, shares) {
+  editing = bill;
+  $("billsList").classList.add("hidden");
+  $("billEditor").classList.remove("hidden");
+  $("editorTitle").textContent = bill.id ? "Edit household bill" : "New household bill";
+  $("bName").value = bill.name ?? "";
+  $("bAmount").value = bill.amount ?? "";
+  $("bDue").value = bill.due_date ?? localISO(new Date(Date.now() + 14 * 86400000));
+  $("bSite").value = bill.website ?? "";
+  $("bRepeat").checked = bill.repeats_monthly ?? true;
+  $("bMethod").value = bill.split_method ?? "equal";
+  $("deleteBill").classList.toggle("hidden", !bill.id);
+  $("billErr").textContent = "";
+  const sh = Object.fromEntries(shares.map((s) => [s.member_id, s]));
+  const isNew = !bill.id;
+  $("splitPeople").innerHTML = familyList().map((p) => {
+    const s = sh[p.id];
+    const on = isNew || !!s;
+    const val = s ? (s.percent ?? s.fixed_amount ?? "") : "";
+    return `<div class="split-row"><input type="checkbox" data-p="${p.id}" ${on ? "checked" : ""} aria-label="${esc(p.display_name)}">
+      <span style="color:${esc(p.color)};font-weight:600">${esc(p.display_name)}</span>
+      <input type="text" inputmode="decimal" data-v="${p.id}" value="${esc(val)}"></div>`;
+  }).join("");
+  document.querySelectorAll("#splitPeople input, #bMethod, #bAmount").forEach((el) => el.addEventListener("input", updateSplit));
+  updateSplit();
+  window.scrollTo(0, 0);
+}
+
+function splitRows() {
+  return familyList().map((p) => ({
+    id: p.id, name: p.display_name,
+    on: document.querySelector(`[data-p="${p.id}"]`).checked,
+    val: parseFloat(document.querySelector(`[data-v="${p.id}"]`).value) || 0,
+  })).filter((r) => r.on);
+}
+
+function updateSplit() {
+  const method = $("bMethod").value;
+  const amount = parseFloat($("bAmount").value) || 0;
+  document.querySelectorAll("[data-v]").forEach((el) => {
+    el.classList.toggle("hidden", method === "equal");
+    el.placeholder = method === "percent" ? "%" : "$";
+  });
+  const rows = splitRows();
+  let txt = "";
+  if (!rows.length) txt = "Pick at least one person.";
+  else if (method === "equal") txt = rows.map((r) => `${r.name} ${money(amount / rows.length)}`).join(" · ");
+  else if (method === "percent") {
+    const sum = rows.reduce((t, r) => t + r.val, 0);
+    txt = rows.map((r) => `${r.name} ${money((amount * r.val) / 100)}`).join(" · ") + ` — total ${sum}%` + (Math.abs(sum - 100) > 0.01 ? " (should be 100%)" : " ✓");
+  } else {
+    const sum = rows.reduce((t, r) => t + r.val, 0);
+    txt = `Shares add up to ${money(sum)} of ${money(amount)}` + (Math.abs(sum - amount) > 0.009 ? " (should match the bill)" : " ✓");
+  }
+  $("splitSummary").textContent = txt;
+}
+
+$("cancelBill").addEventListener("click", loadBills);
+
+$("saveBill").addEventListener("click", async () => {
+  $("billErr").textContent = "";
+  const name = $("bName").value.trim();
+  const amount = parseFloat(String($("bAmount").value).replace(/[$,]/g, ""));
+  const due = $("bDue").value;
+  const method = $("bMethod").value;
+  const rows = splitRows();
+  if (!name) return ($("billErr").textContent = "Give the bill a name.");
+  if (!(amount >= 0)) return ($("billErr").textContent = "Enter the amount, like 186.00");
+  if (!due) return ($("billErr").textContent = "Pick a due date.");
+  if (!rows.length) return ($("billErr").textContent = "Pick at least one person to split with.");
+  if (method === "percent" && Math.abs(rows.reduce((t, r) => t + r.val, 0) - 100) > 0.01) return ($("billErr").textContent = "Percents need to add up to 100.");
+  if (method === "fixed" && Math.abs(rows.reduce((t, r) => t + r.val, 0) - amount) > 0.009) return ($("billErr").textContent = "Fixed amounts need to add up to the bill amount.");
+
+  let site = $("bSite").value.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
+  const fields = { name, amount, due_date: due, repeats_monthly: $("bRepeat").checked, split_method: method, website: site || null, owner_id: null };
+  let billId = editing.id;
+  if (billId) {
+    const { error } = await db.from("bills").update(fields).eq("id", billId);
+    if (error) return ($("billErr").textContent = "Couldn't save: " + error.message);
+  } else {
+    const { data, error } = await db.from("bills").insert(fields).select("id").single();
+    if (error) return ($("billErr").textContent = "Couldn't save: " + error.message);
+    billId = data.id;
+  }
+  // shares: keep paid status for people who stay on the bill
+  const keepIds = rows.map((r) => r.id);
+  const { data: existing } = await db.from("bill_shares").select("member_id").eq("bill_id", billId);
+  const drop = (existing || []).map((e) => e.member_id).filter((id) => !keepIds.includes(id));
+  if (drop.length) await db.from("bill_shares").delete().eq("bill_id", billId).in("member_id", drop);
+  const up = rows.map((r) => ({ bill_id: billId, member_id: r.id, percent: method === "percent" ? r.val : null, fixed_amount: method === "fixed" ? r.val : null }));
+  const { error: shErr } = await db.from("bill_shares").upsert(up, { onConflict: "bill_id,member_id" });
+  if (shErr) return ($("billErr").textContent = "Bill saved, but the split didn't: " + shErr.message);
+  loadBills();
+});
+
+$("deleteBill").addEventListener("click", async () => {
+  if (!editing?.id || !confirm(`Delete "${editing.name}"? Everyone's share of it goes too.`)) return;
+  const { error } = await db.from("bills").delete().eq("id", editing.id);
+  if (error) return ($("billErr").textContent = "Couldn't delete: " + error.message);
+  loadBills();
+});
+
+async function clearSample() {
+  if (!confirm("Remove all the sample bills, notes and events? Your real entries stay.")) return;
+  await db.from("bills").delete().eq("notes", "SAMPLE");
+  await db.from("notes").delete().like("body", "%(sample)");
+  await db.from("events").delete().eq("notes", "SAMPLE");
+  loadBills();
+}
 
 // ---------- installable app ----------
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js");

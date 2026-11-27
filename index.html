@@ -43,6 +43,9 @@
   .hidden { display:none !important; }
   .sw { width:44px; height:44px; border-radius:22px; border:3px solid transparent; }
   .sw.on { border-color:#fff; }
+  .split-row { display:grid; grid-template-columns: 28px 1fr 110px; align-items:center; gap:10px; padding:8px 0; border-bottom:1px solid var(--line); }
+  .split-row input[type=checkbox] { width:22px; height:22px; }
+  .split-row input[type=text] { padding:10px; font-size:15px; }
   .avatar.photo { color: transparent; background-size: cover; background-position: center; }
   .check { display:flex; align-items:center; gap:10px; margin-top:12px; color: var(--text); font-size:15px; }
   .check input { width:22px; height:22px; }
@@ -92,6 +95,36 @@
     <h2>Notes</h2>
     <div id="noteList"></div>
   </main>
+  <main id="tab-bills" class="hidden">
+    <div id="billsList"></div>
+    <div id="billEditor" class="hidden">
+      <h2 id="editorTitle">New household bill</h2>
+      <div class="card">
+        <label for="bName" style="margin-top:0">Bill name</label>
+        <input id="bName" maxlength="40" placeholder="Consumers Energy">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label for="bAmount">Amount</label><input id="bAmount" inputmode="decimal" placeholder="186.00"></div>
+          <div><label for="bDue">Due date</label><input id="bDue" type="date"></div>
+        </div>
+        <label for="bSite">Company website (optional)</label>
+        <input id="bSite" placeholder="consumersenergy.com" autocapitalize="off" inputmode="url">
+        <div class="check"><input type="checkbox" id="bRepeat" checked><label for="bRepeat" style="margin:0;color:var(--text)">Repeats monthly</label></div>
+        <label>Split between</label>
+        <div id="splitPeople"></div>
+        <label for="bMethod">How to split</label>
+        <select id="bMethod">
+          <option value="equal">Equally</option>
+          <option value="percent">By percent</option>
+          <option value="fixed">Fixed amounts</option>
+        </select>
+        <div id="splitSummary" class="sub" style="margin-top:10px"></div>
+        <button class="btn" id="saveBill">Save bill</button>
+        <button class="btn ghost" id="cancelBill">Cancel</button>
+        <button class="btn ghost hidden" id="deleteBill" style="color:var(--red)">Delete this bill</button>
+        <div class="err" id="billErr"></div>
+      </div>
+    </div>
+  </main>
   <main id="tab-me" class="hidden">
     <h2>Your profile</h2>
     <div class="card">
@@ -115,11 +148,12 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P2</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P3</p>
   </main>
 
   <nav>
     <button data-tab="board" class="on">Board</button>
+    <button data-tab="bills">Bills</button>
     <button data-tab="notes">Notes</button>
     <button data-tab="me">Me</button>
   </nav>
