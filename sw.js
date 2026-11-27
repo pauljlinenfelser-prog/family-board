@@ -1,7 +1,7 @@
 // Family Board service worker: makes the app installable, loads the shell fast, and shows notifications.
 // Data always comes live from the database; only the app files are cached.
-const CACHE = "familyboard-P18";
-const SHELL = ["./", "index.html", "app.js?v=P18", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
+const CACHE = "familyboard-P19";
+const SHELL = ["./", "index.html", "app.js?v=P19", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" })))));
@@ -27,13 +27,18 @@ self.addEventListener("fetch", (e) => {
 self.addEventListener("push", (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { body: e.data ? e.data.text() : "" }; }
-  e.waitUntil(self.registration.showNotification(d.title || "Family Board", {
+  // P19: always alert (sound/vibrate/pop-up) - even when it replaces an older one with the same tag
+  const opts = {
     body: d.body || "",
     icon: "icon-192.png",
     badge: "icon-192.png",
-    tag: d.tag || undefined,
+    vibrate: [200, 100, 200],
+    timestamp: Date.now(),
+    silent: false,
     data: { url: d.url || "./" },
-  }));
+  };
+  if (d.tag) { opts.tag = d.tag; opts.renotify = true; }
+  e.waitUntil(self.registration.showNotification(d.title || "Family Board", opts));
 });
 
 self.addEventListener("notificationclick", (e) => {
