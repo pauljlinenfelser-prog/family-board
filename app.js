@@ -1161,6 +1161,7 @@ function openEditor(bill, shares) {
   $("bPayNote").value = bill.pay_note ?? "";
   logoUrl = bill.logo_url ?? null;
   paintLogo();
+  $("logoHint").textContent = "";
   $("logoPicker").classList.add("hidden");
   $("logoResults").innerHTML = "";
   $("logoQuery").value = "";
@@ -1231,6 +1232,53 @@ $("logoResults").addEventListener("click", (e) => {
   $("logoPicker").classList.add("hidden");
 });
 $("clearLogo").addEventListener("click", () => { logoUrl = null; paintLogo(); });
+
+// P26: upload your own logo (photo or screenshot) when there's no app logo.
+// Squared onto a white 256x256 tile and stored in bill-media with a long-lasting link, so the TVs show it too.
+function logoPng(file) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const S = 256, pad = 16, c = document.createElement("canvas");
+      c.width = S; c.height = S;
+      const ctx = c.getContext("2d");
+      ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, S, S);
+      const k = Math.min((S - 2 * pad) / img.naturalWidth, (S - 2 * pad) / img.naturalHeight);
+      const w = img.naturalWidth * k, h = img.naturalHeight * k;
+      ctx.drawImage(img, (S - w) / 2, (S - h) / 2, w, h);
+      URL.revokeObjectURL(img.src);
+      c.toBlob((b) => (b ? resolve(b) : reject(new Error("Couldn't read that image"))), "image/png");
+    };
+    img.onerror = () => reject(new Error("Couldn't read that image"));
+    img.src = URL.createObjectURL(file);
+  });
+}
+const logoFile = Object.assign(document.createElement("input"), { type: "file", accept: "image/*" });
+logoFile.style.display = "none";
+document.body.appendChild(logoFile);
+$("uploadLogo").addEventListener("click", () => logoFile.click());
+logoFile.addEventListener("change", async () => {
+  const f = logoFile.files?.[0];
+  logoFile.value = "";
+  if (!f) return;
+  const say = (t) => ($("logoHint").textContent = t);
+  try {
+    say("Uploading logo…");
+    const blob = await logoPng(f);
+    const folder = editing?.owner_id ? `${editing.owner_id}/logos` : "household/logos";
+    const path = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2, 7)}.png`;
+    const up = await db.storage.from("bill-media").upload(path, blob, { contentType: "image/png" });
+    if (up.error) throw up.error;
+    const { data, error } = await db.storage.from("bill-media").createSignedUrl(path, 315360000); // ~10 years
+    if (error || !data?.signedUrl) throw error || new Error("no link");
+    logoUrl = data.signedUrl;
+    paintLogo();
+    $("logoPicker").classList.add("hidden");
+    say("Logo ready. Tap Save to keep it.");
+  } catch (err) {
+    say("Couldn't upload that logo: " + (err?.message || err));
+  }
+});
 
 // ---------- reminder texts (P17): opens the phone's own Messages app, ready to send ----------
 const APP_URL = "https://pauljlinenfelser-prog.github.io/family-board/";
