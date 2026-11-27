@@ -42,6 +42,25 @@
   .logo { width:44px; height:44px; flex:none; border-radius:10px; background: var(--card) center/cover no-repeat; display:flex; align-items:center; justify-content:center; font-weight:700; color: var(--muted); }
   .logo-pick { background: var(--card); border:2px solid transparent; border-radius:14px; padding:8px; color: var(--text); font-size:12px; text-align:center; }
   .logo-pick img { width:64px; height:64px; border-radius:14px; display:block; margin:0 auto 6px; }
+  .tiles { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:6px; }
+  .tile { background: var(--card); border-radius:14px; padding:12px 14px; }
+  .tile .tnum { font-size:22px; font-weight:700; margin-top:2px; }
+  .tile-late { background:#3A1A1A; } .tile-late .sub, .tile-late .tnum { color: var(--red); }
+  .wallet { position:relative; margin:16px 0 6px; }
+  .wcard { position:absolute; left:0; right:0; height:176px; border-radius:18px; padding:14px 16px; cursor:pointer; transition: top .25s ease; box-shadow: 0 -2px 10px rgba(0,0,0,.35); }
+  .wcard .name { font-size:16px; }
+  .wlogo { width:38px; height:38px; flex:none; border-radius:10px; background:#fff center/cover no-repeat; display:flex; align-items:center; justify-content:center; font-weight:700; font-size:17px; }
+  .wamt { font-size:28px; font-weight:700; margin-top:20px; }
+  .wpill { font-size:12px; font-weight:600; padding:4px 10px; border-radius:10px; }
+  .paidlist { margin-top:12px; } .paidlist summary { cursor:pointer; padding:6px 0; }
+  .week { display:grid; grid-template-columns:repeat(7,1fr); gap:4px; text-align:center; }
+  .wday { border-radius:10px; padding:6px 0; } .wday .sub { margin:0; font-size:11px; }
+  .wday.on { background:#2A3A5C; }
+  .wnum { font-size:17px; font-weight:700; }
+  .wdots { height:8px; display:flex; gap:3px; justify-content:center; margin-top:3px; }
+  .wdots i, .wev i { width:6px; height:6px; border-radius:3px; display:inline-block; flex:none; }
+  .wev { display:flex; align-items:center; gap:10px; padding:8px 0; border-top:1px solid var(--line); font-size:14px; }
+  .wev:first-of-type { margin-top:10px; }
   .chip { display:inline-block; padding:2px 10px; border-radius:10px; background: var(--card); font-size:12px; color: var(--muted); }
   .hidden { display:none !important; }
   .sw { width:44px; height:44px; border-radius:22px; border:3px solid transparent; }
@@ -200,17 +219,17 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P11</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P12</p>
   </main>
 
   <nav>
-    <button data-tab="board" class="on">Board</button>
+    <button data-tab="board" class="on">Home</button>
     <button data-tab="bills">Bills</button>
     <button data-tab="notes">Notes</button>
     <button data-tab="me">Me</button>
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P11"></script>
+<script type="module" src="app.js?v=P12"></script>
 </body>
 </html>

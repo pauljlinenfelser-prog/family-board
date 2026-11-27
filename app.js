@@ -99,37 +99,55 @@ async function loadBoard() {
   const monthStart = today.slice(0, 8) + "01";
   const n = new Date(); const next = new Date(n.getFullYear(), n.getMonth() + 1, 1);
   const nextMonth = localISO(next);
-  const in14 = localISO(new Date(Date.now() + 14 * 86400000));
+  const in7 = localISO(new Date(Date.now() + 7 * 86400000));
 
-  const [due, shares, mine, toConfirm] = await Promise.all([
-    db.from("bills").select("id,name,amount,due_date,owner_id,paid").eq("paid", false).lte("due_date", in14).order("due_date"),
+  const [shares, mine, toConfirm, events] = await Promise.all([
     // this month's shares, plus unpaid ones from earlier months (past due)
-    db.from("bill_share_amounts").select("id,bill_id,bill_name,share_amount,paid,paid_method,confirmed,due_date,member_id").eq("member_id", me.id)
+    db.from("bill_share_amounts").select("id,bill_id,bill_name,bill_amount,share_amount,paid,paid_method,confirmed,due_date,member_id").eq("member_id", me.id)
       .or(`and(due_date.gte.${monthStart},due_date.lt.${nextMonth}),and(paid.eq.false,due_date.lt.${monthStart})`).order("due_date"),
-    db.from("bills").select("id,name,amount,due_date,paid,show_on_board").eq("owner_id", me.id).gte("due_date", monthStart).lt("due_date", nextMonth).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days").eq("owner_id", me.id)
+      .or(`and(due_date.gte.${monthStart},due_date.lt.${nextMonth}),and(paid.eq.false,due_date.lt.${monthStart})`).order("due_date"),
     canManage()
       ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
       : Promise.resolve({ data: [] }),
+    db.from("events").select("title,kind,starts_at,ends_at,all_day,member_id").lte("starts_at", in7 + "T23:59:59")
+      .or(`starts_at.gte.${today},ends_at.gte.${today}`).order("starts_at").limit(30),
   ]);
+  // logos + repeat info for the household bills behind my shares
+  const billIds = [...new Set((shares.data || []).map((s) => s.bill_id))];
+  const { data: shareBills } = billIds.length
+    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days").in("id", billIds)
+    : { data: [] };
+  const billInfo = Object.fromEntries((shareBills || []).map((b) => [b.id, b]));
+
   const waiting = toConfirm.data || [];
   const items = [
-    ...(shares.data || []).map((s) => ({ shareId: s.id, name: s.bill_name, amount: Number(s.share_amount), paid: s.paid, method: s.paid_method, confirmed: s.confirmed, due: s.due_date, kind: "Household share" })),
-    ...(mine.data || []).map((b) => ({ name: b.name, amount: Number(b.amount), paid: b.paid, due: b.due_date, kind: b.show_on_board ? "Personal" : "Personal · private" })),
+    ...(shares.data || []).map((s) => ({ shareId: s.id, billId: s.bill_id, name: s.bill_name, amount: Number(s.share_amount), billAmount: Number(s.bill_amount),
+      paid: s.paid, method: s.paid_method, confirmed: s.confirmed, due: s.due_date, kind: "household", info: billInfo[s.bill_id] || {} })),
+    ...(mine.data || []).map((b) => ({ personalId: b.id, bill: b, name: b.name, amount: Number(b.amount), paid: b.paid, due: b.due_date,
+      kind: b.show_on_board ? "personal" : "private", info: b })),
   ].sort((a, b) => a.due.localeCompare(b.due));
-  const total = items.reduce((t, i) => t + i.amount, 0);
-  const paid = items.filter((i) => i.paid).reduce((t, i) => t + i.amount, 0);
-  const pct = total ? Math.round((paid / total) * 100) : 0;
-  const color = member?.color ?? "#7FA8F9";
+  const open = items.filter((i) => !i.paid);
+  const left = open.reduce((t, i) => t + i.amount, 0);
+  const late = open.filter((i) => daysUntil(i.due) < 0).reduce((t, i) => t + i.amount, 0);
 
-  let html = `<h2>Your ${new Date().toLocaleDateString("en-US", { month: "long" })}</h2>
-    <div class="card">
-      <div class="sub">Left to pay this month</div>
-      <div class="big">${money(total - paid)}</div>
-      <div class="sub">${money(total)} total · ${money(paid)} paid</div>
-      <div class="bar"><div style="width:${pct}%;background:${esc(color)}"></div></div>
+  let html = `<div class="tiles">
+      <div class="tile"><div class="sub">Left to pay</div><div class="tnum">${money(left)}</div></div>
+      <div class="tile ${late ? "tile-late" : ""}"><div class="sub">${late ? "Past due" : "Past due"}</div><div class="tnum">${money(late)}</div></div>
     </div>`;
-  html += items.length ? items.map(itemRow).join("") : `<div class="card sub">Nothing on your list this month.</div>`;
-  if (items.some((i) => i.shareId && !i.paid)) html += `<p class="sub center">Tap one of your shares to mark it paid.</p>`;
+
+  // ---- wallet: my unpaid bills as stacked cards, oldest first ----
+  const cards = open.slice(0, 8).reverse(); // most urgent ends up in front
+  if (cards.length) {
+    const step = 58, h = 176;
+    html += `<div class="wallet" style="height:${(cards.length - 1) * step + h}px">` + cards.map((i, k) => walletCard(i, k, step)).join("") + `</div>`;
+    html += `<p class="sub center">Tap a card to bring it forward. Tap it again to pay or mark it paid.</p>`;
+    if (open.length > cards.length) html += `<p class="sub center">+ ${open.length - cards.length} more on the Bills tab</p>`;
+  } else {
+    html += `<div class="card center" style="padding:26px 16px"><div class="big" style="font-size:22px">All paid up ✓</div><div class="sub">Nothing left to pay this month.</div></div>`;
+  }
+  const paidItems = items.filter((i) => i.paid);
+  if (paidItems.length) html += `<details class="paidlist"><summary class="sub">Paid this month (${paidItems.length})</summary>${paidItems.map(itemRow).join("")}</details>`;
 
   if (waiting.length) {
     html += `<h2>Waiting for you to confirm</h2>`;
@@ -141,28 +159,81 @@ async function loadBoard() {
     }).join("");
   }
 
-  html += `<h2>Due in the next 2 weeks</h2>`;
-  const dueRows = due.data || [];
-  html += dueRows.length
-    ? dueRows.map((b) => {
-        const d = daysUntil(b.due_date);
-        const cls = d < 0 ? "late" : d <= 7 ? "soon" : "";
-        const whose = b.owner_id ? people[b.owner_id]?.display_name ?? "Personal" : "Household";
-        return `<div class="card row"><div class="grow"><div class="name">${esc(b.name)}</div>
-          <div class="sub ${cls}">${dueLabel(b.due_date)} · ${esc(whose)}</div></div><div class="amt">${money(b.amount)}</div></div>`;
-      }).join("")
-    : `<div class="card sub">Nothing due in the next two weeks.</div>`;
+  html += weekStrip(events.data || [], open, today);
+
+  html += `<h2>Family photos</h2><div class="card sub center" style="padding:22px 16px">Family photos will show here once photo uploads are added.</div>`;
+
   $("tab-board").innerHTML = html;
   boardItems = items;
+  walletFront = null;
 }
+
+// ---- wallet cards (P12) ----
+let walletFront = null;
+const CARD_COLORS = [["#0C447C", "#E6F1FB", "#B5D4F4"], ["#2C2C2A", "#F1EFE8", "#B4B2A9"], ["#085041", "#E1F5EE", "#9FE1CB"],
+  ["#3C3489", "#EEEDFE", "#CECBF6"], ["#633806", "#FAEEDA", "#FAC775"], ["#72243E", "#FBEAF0", "#F4C0D1"]];
+function cardColors(i) {
+  if (daysUntil(i.due) < 0) return ["#A32D2D", "#FCEBEB", "#F7C1C1"];
+  let h = 0; for (const c of i.name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
+  return CARD_COLORS[h % CARD_COLORS.length];
+}
+function walletCard(i, k, step) {
+  const [bg, fg, soft] = cardColors(i);
+  const key = i.shareId ? "s:" + i.shareId : "p:" + i.personalId;
+  const logo = i.info.logo_url
+    ? `<div class="wlogo" style="background-image:url('${esc(i.info.logo_url)}')"></div>`
+    : `<div class="wlogo" style="background-color:${fg};color:${bg}">${esc(i.name.slice(0, 1).toUpperCase())}</div>`;
+  const sub = [i.kind === "household" ? "Household" : i.kind === "private" ? "🔒 Private" : "Personal", repeatLabel(i.info)].filter(Boolean).join(" · ");
+  const pill = i.kind === "household" ? `Bill ${money(i.billAmount)}` : "Tap to mark paid";
+  return `<div class="wcard" data-card="${key}" style="top:${k * step}px;z-index:${k + 1};background:${bg};color:${fg}">
+    <div class="row">${logo}<div class="grow"><div class="name">${esc(i.name)}</div><div style="font-size:12px;color:${soft}">${esc(sub)}</div></div></div>
+    <div class="wamt">${money(i.amount)}${i.kind === "household" ? `<span style="font-size:12px;font-weight:600;color:${soft}"> your share</span>` : ""}</div>
+    <div class="row" style="justify-content:space-between;margin-top:6px"><span style="font-size:13px">${esc(dueLabel(i.due))}</span>
+      <span class="wpill" style="background:${fg};color:${bg}">${esc(pill)}</span></div></div>`;
+}
+function bringForward(el) {
+  const cardsEls = [...document.querySelectorAll("#tab-board .wcard")];
+  const step = 58;
+  const order = cardsEls.filter((c) => c !== el).concat(el);
+  order.forEach((c, pos) => { c.style.top = pos * step + "px"; c.style.zIndex = pos + 1; });
+  walletFront = el.dataset.card;
+}
+
+// ---- this week (P12): events + my due dates ----
+function weekStrip(events, open, today) {
+  const days = [...Array(7)].map((_, k) => localISO(new Date(new Date(today + "T12:00:00").getTime() + k * 86400000)));
+  const evDay = (e) => localISO(new Date(e.starts_at));
+  const evEnd = (e) => localISO(new Date(e.ends_at || e.starts_at));
+  const list = [];
+  for (const e of events) {
+    if (evEnd(e) < today) continue;
+    const p = people[e.member_id];
+    const when = e.all_day ? fmtShort(evDay(e)) : fmtShort(evDay(e)) + " " + new Date(e.starts_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" }).replace(":00", "").toLowerCase();
+    list.push({ day: evDay(e) < today ? today : evDay(e), color: p?.color ?? "#8A919E",
+      text: `${p?.display_name ?? "Someone"}${e.kind === "away" ? " away" : ""} · ${e.title}`, when });
+  }
+  for (const i of open) if (i.due >= today && i.due <= days[6]) list.push({ day: i.due, color: "#F2C14E", text: `${i.name} due`, when: fmtShort(i.due) });
+  list.sort((a, b) => a.day.localeCompare(b.day));
+  let h = `<h2>This week</h2><div class="card"><div class="week">` + days.map((d) => {
+    const dots = [...new Set(list.filter((x) => x.day === d).map((x) => x.color))].slice(0, 3);
+    return `<div class="wday ${d === today ? "on" : ""}"><div class="sub">${new Date(d + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" })}</div>
+      <div class="wnum">${Number(d.slice(8))}</div><div class="wdots">${dots.map((c) => `<i style="background:${esc(c)}"></i>`).join("")}</div></div>`;
+  }).join("") + `</div>`;
+  h += list.length
+    ? list.slice(0, 6).map((x) => `<div class="wev"><i style="background:${esc(x.color)}"></i><span class="sub" style="width:74px;margin:0">${esc(x.when)}</span><span>${esc(x.text)}</span></div>`).join("")
+    : `<div class="sub" style="margin-top:10px">Nothing on the calendar this week.</div>`;
+  return h + `</div>`;
+}
+function fmtShort(iso) { return new Date(iso + "T12:00:00").toLocaleDateString("en-US", { weekday: "short" }); }
 
 function itemRow(i) {
   const d = daysUntil(i.due);
   const cls = i.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
   let status = i.paid ? "Paid ✓" : dueLabel(i.due);
   if (i.paid && i.shareId) status = i.confirmed ? "Paid ✓ · confirmed" : `Paid · ${methodLabel(i.method)} · waiting for ${payee()?.display_name ?? "admin"} to confirm`;
-  return `<div class="card row" ${i.shareId ? `data-share="${i.shareId}" style="cursor:pointer"` : ""}><div class="grow"><div class="name">${esc(i.name)}</div>
-    <div class="sub ${cls}">${esc(status)} · ${esc(i.kind)}</div></div>
+  const key = i.shareId ? "s:" + i.shareId : "p:" + i.personalId;
+  return `<div class="card row" data-card="${key}" style="cursor:pointer"><div class="grow"><div class="name">${esc(i.name)}</div>
+    <div class="sub ${cls}">${esc(status)}</div></div>
     <div class="amt ${i.paid ? "paid" : ""}">${money(i.amount)}</div></div>`;
 }
 
@@ -184,6 +255,19 @@ function openShare(i) {
   const pay = payee();
   const iAmPayee = pay?.id === me.id;
   const link = iAmPayee ? null : cashAppLink(i.amount);
+  if (i.personalId) {
+    let h = `<h2>${esc(i.name)}</h2><div class="card"><div class="sub">Your bill</div><div class="big">${money(i.amount)}</div>
+      <div class="sub">${i.paid ? "Paid ✓" : dueLabel(i.due)}</div>`;
+    h += i.paid ? `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — not paid yet</button>`
+      : `<button class="btn" data-pay="direct">Mark paid</button>`;
+    if (i.info.website) h += `<a class="btn ghost" href="https://${esc(i.info.website)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none">Open ${esc(i.info.website)}</a>`;
+    h += `<button class="btn ghost" data-back="1">Back</button><div class="err" id="shareErr"></div></div>`;
+    $("tab-board").innerHTML = h;
+    window.scrollTo(0, 0);
+    $("tab-board").querySelectorAll("[data-pay]").forEach((b) => b.addEventListener("click", () => markShare(i, b.dataset.pay)));
+    $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+    return;
+  }
   let h = `<h2>${esc(i.name)}</h2><div class="card">
     <div class="sub">Your share</div><div class="big">${money(i.amount)}</div>
     <div class="sub">${i.paid ? (i.confirmed ? "Paid ✓ · confirmed" : "Paid · " + esc(methodLabel(i.method))) : dueLabel(i.due)}</div>`;
@@ -207,6 +291,11 @@ function openShare(i) {
 }
 
 async function markShare(i, how) {
+  if (i.personalId) {
+    const { error } = await db.from("bills").update({ paid: how !== "undo" }).eq("id", i.personalId);
+    if (error) return ($("shareErr").textContent = "Couldn't save: " + error.message);
+    return loadBoard();
+  }
   const fields = how === "undo"
     ? { paid: false, paid_on: null, paid_method: null }
     : { paid: true, paid_on: localISO(), paid_method: how };
@@ -218,9 +307,14 @@ async function markShare(i, how) {
 }
 
 $("tab-board").addEventListener("click", async (e) => {
-  const row = e.target.closest("[data-share]");
+  const row = e.target.closest("[data-card]");
   if (row) {
-    const i = boardItems.find((x) => x.shareId === row.dataset.share);
+    if (row.classList.contains("wcard") && Number(row.style.zIndex) !== document.querySelectorAll("#tab-board .wcard").length) {
+      bringForward(row);
+      return;
+    }
+    const key = row.dataset.card;
+    const i = boardItems.find((x) => (x.shareId ? "s:" + x.shareId : "p:" + x.personalId) === key);
     if (i) openShare(i);
     return;
   }
