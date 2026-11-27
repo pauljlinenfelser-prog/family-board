@@ -101,13 +101,16 @@ async function loadBoard() {
   const n = new Date(); const next = new Date(n.getFullYear(), n.getMonth() + 1, 1);
   const nextMonth = localISO(next);
   const in7 = localISO(new Date(Date.now() + 7 * 86400000));
+  // P20: your bills = everything unpaid due in the next 30 days (past due included) + what you paid in the last 30 days
+  const in30 = localISO(new Date(Date.now() + 30 * 86400000));
+  const ago30 = localISO(new Date(Date.now() - 30 * 86400000));
+  const windowFilter = `paid.eq.false,due_date.gte.${ago30}`;
 
   const [shares, mine, toConfirm, events] = await Promise.all([
-    // this month's shares, plus unpaid ones from earlier months (past due)
     db.from("bill_share_amounts").select("id,bill_id,bill_name,bill_amount,share_amount,paid,paid_method,confirmed,due_date,member_id").eq("member_id", me.id)
-      .or(`and(due_date.gte.${monthStart},due_date.lt.${nextMonth}),and(paid.eq.false,due_date.lt.${monthStart})`).order("due_date"),
+      .lte("due_date", in30).or(windowFilter).order("due_date"),
     db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images").eq("owner_id", me.id)
-      .or(`and(due_date.gte.${monthStart},due_date.lt.${nextMonth}),and(paid.eq.false,due_date.lt.${monthStart})`).order("due_date"),
+      .lte("due_date", in30).or(windowFilter).order("due_date"),
     canManage()
       ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
       : Promise.resolve({ data: [] }),
@@ -133,7 +136,7 @@ async function loadBoard() {
   const late = open.filter((i) => daysUntil(i.due) < 0).reduce((t, i) => t + i.amount, 0);
 
   let html = `<div class="tiles">
-      <div class="tile"><div class="sub">Left to pay</div><div class="tnum">${money(left)}</div></div>
+      <div class="tile"><div class="sub">Left to pay · next 30 days</div><div class="tnum">${money(left)}</div></div>
       <div class="tile ${late ? "tile-late" : ""}"><div class="sub">${late ? "Past due" : "Past due"}</div><div class="tnum">${money(late)}</div></div>
     </div>`;
 
@@ -145,10 +148,10 @@ async function loadBoard() {
     html += `<p class="sub center">Tap a card to bring it forward. Tap it again to pay or mark it paid.</p>`;
     if (open.length > cards.length) html += `<p class="sub center">+ ${open.length - cards.length} more on the Bills tab</p>`;
   } else {
-    html += `<div class="card center" style="padding:26px 16px"><div class="big" style="font-size:22px">All paid up ✓</div><div class="sub">Nothing left to pay this month.</div></div>`;
+    html += `<div class="card center" style="padding:26px 16px"><div class="big" style="font-size:22px">All paid up ✓</div><div class="sub">Nothing due in the next 30 days.</div></div>`;
   }
   const paidItems = items.filter((i) => i.paid);
-  if (paidItems.length) html += `<details class="paidlist"><summary class="sub">Paid this month (${paidItems.length})</summary>${paidItems.map(itemRow).join("")}</details>`;
+  if (paidItems.length) html += `<details class="paidlist"><summary class="sub">Paid in the last 30 days (${paidItems.length})</summary>${paidItems.map(itemRow).join("")}</details>`;
 
   if (waiting.length) {
     html += `<h2>Waiting for you to confirm</h2>`;
