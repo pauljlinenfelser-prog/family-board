@@ -60,6 +60,7 @@ async function start(user) {
   await paintAvatar($("me"), member);
   fillProfile();
   paintPush().catch(() => {});
+  paintCal().catch(() => {});
   $("meEmail").textContent = user.email;
   $("meRole").textContent = member?.role === "admin" ? "Admin" : member?.bill_manager ? "Bill manager" : "Family member";
   fillNoteTo();
@@ -114,7 +115,7 @@ async function loadBoard() {
     canManage()
       ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
       : Promise.resolve({ data: [] }),
-    db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes").lte("starts_at", in7 + "T23:59:59")
+    db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes,source").lte("starts_at", in7 + "T23:59:59")
       .or(`starts_at.gte.${today},ends_at.gte.${today}`).order("starts_at").limit(30),
   ]);
   const { data: others } = await db.from("bills").select("id,name,amount,due_date,owner_id,admin_id,logo_url,website,full_images,pay_url,account_number,autopay,pay_note")
@@ -247,7 +248,7 @@ function weekStrip(events, open, today) {
 }
 // ---------- calendar events and away times (P13) ----------
 let weekEvents = [];
-const canEditEvent = (e) => !e.id || e.member_id === me.id || member?.role === "admin";
+const canEditEvent = (e) => !e.id || (e.source !== "phone" && (e.member_id === me.id || member?.role === "admin"));
 const timeOf = (ts) => { const d = new Date(ts); return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`; };
 
 function openEvent(e) {
@@ -320,7 +321,7 @@ async function openMonth(monthIso, pickDay) {
   const sel = pickDay || (today.slice(0, 7) === monthIso.slice(0, 7) ? today : monthIso);
   $("tab-board").innerHTML = `<div class="sub center" style="padding:30px">Loading the calendar…</div>`;
   const [ev, bl] = await Promise.all([
-    db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes").lte("starts_at", gridEnd + "T23:59:59")
+    db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes,source").lte("starts_at", gridEnd + "T23:59:59")
       .or(`starts_at.gte.${gridStart},ends_at.gte.${gridStart}`).order("starts_at").limit(500),
     db.from("bills").select("id,name,amount,due_date,paid,owner_id,logo_url").gte("due_date", gridStart).lte("due_date", gridEnd).order("due_date"),
   ]);
@@ -356,7 +357,7 @@ async function openMonth(monthIso, pickDay) {
   h += it.ev.length ? it.ev.map((e) => {
     const p = people[e.member_id];
     const time = e.all_day ? "All day" : new Date(e.starts_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-    return `<div class="wev" ${canEditEvent(e) ? `data-ev="${e.id}" style="cursor:pointer"` : ""}><i style="background:${esc(p?.color ?? "#8A919E")}"></i>
+    return `<div class="wev" ${canEditEvent(e) || e.source === "phone" ? `data-ev="${e.id}" style="cursor:pointer"` : ""}><i style="background:${esc(p?.color ?? "#8A919E")}"></i>
       <span class="sub" style="width:74px;margin:0">${esc(time)}</span><span>${esc(p?.display_name ?? "Someone")}${e.kind === "away" ? " away" : ""} · ${esc(e.title)}${e.notes ? `<span class="sub"> · ${esc(e.notes)}</span>` : ""}</span></div>`;
   }).join("") : `<div class="sub">Nothing on the calendar.</div>`;
   if (it.bl.length) h += it.bl.map((b) => `<div class="wev" data-billid="${b.id}" style="cursor:pointer"><i style="background:${b.paid ? "#7D8594" : "#F2C14E"}"></i>
@@ -368,7 +369,7 @@ async function openMonth(monthIso, pickDay) {
 
 async function openAllEvents() {
   const today = localISO();
-  const { data } = await db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes")
+  const { data } = await db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes,source")
     .or(`starts_at.gte.${today},ends_at.gte.${today}`).order("starts_at").limit(100);
   const rows = data || [];
   weekEvents = rows;
@@ -378,7 +379,7 @@ async function openAllEvents() {
     const sd = localISO(new Date(e.starts_at)), ed = e.ends_at ? localISO(new Date(e.ends_at)) : sd;
     let when = fmtDate(sd) + (ed !== sd ? " – " + fmtDate(ed) : "");
     if (!e.all_day) when += " · " + new Date(e.starts_at).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" });
-    return `<div class="card row" ${canEditEvent(e) ? `data-ev="${e.id}" style="cursor:pointer"` : ""}>
+    return `<div class="card row" ${canEditEvent(e) || e.source === "phone" ? `data-ev="${e.id}" style="cursor:pointer"` : ""}>
       <i style="width:10px;height:10px;border-radius:5px;flex:none;background:${esc(p?.color ?? "#8A919E")}"></i>
       <div class="grow"><div class="name">${esc(p?.display_name ?? "Someone")}${e.kind === "away" ? " away" : ""} · ${esc(e.title)}</div>
       <div class="sub">${esc(when)}${e.notes ? " · " + esc(e.notes) : ""}</div></div></div>`;
@@ -817,7 +818,8 @@ $("tab-board").addEventListener("click", async (e) => {
   const evRow = e.target.closest("[data-ev]");
   if (evRow) {
     const ev = weekEvents.find((x) => x.id === evRow.dataset.ev);
-    if (ev && canEditEvent(ev)) openEvent(ev);
+    if (ev && ev.source === "phone") alert(`This comes from ${people[ev.member_id]?.display_name ?? "their"}'s phone calendar. Change it there; the board picks it up within an hour.`);
+    else if (ev && canEditEvent(ev)) openEvent(ev);
     return;
   }
   const row = e.target.closest("[data-card]");
@@ -953,6 +955,52 @@ $("pushOff").addEventListener("click", async () => {
   const sub = await pushSub();
   if (sub) { await db.from("push_subscriptions").delete().eq("endpoint", sub.endpoint); await sub.unsubscribe(); }
   paintPush();
+});
+
+// ---------- my phone calendar (P27): Google / iPhone calendar link, copied in by the notify function ----------
+let calLink = null;
+async function paintCal() {
+  const { data: l } = await db.from("calendar_links").select("ics_url,busy_only,last_sync,last_count,last_error").eq("member_id", me.id).maybeSingle();
+  calLink = l || null;
+  const show = (id, on) => $(id).classList.toggle("hidden", !on);
+  show("calForm", !calLink); show("calSave", !calLink); show("calSync", !!calLink); show("calUnlink", !!calLink);
+  $("calBusy").checked = !!calLink?.busy_only;
+  if (!calLink) $("calState").textContent = "Link the calendar on your phone so your appointments show on the family board and the TVs. It checks for changes every hour.";
+  else if (calLink.last_error) $("calState").innerHTML = `Linked, but the last check didn't work: <span style="color:var(--red)">${esc(calLink.last_error)}</span>`;
+  else $("calState").textContent = calLink.last_sync
+    ? `Linked ✓ · ${calLink.last_count ?? 0} entries in the next 90 days · checked ${agoText(calLink.last_sync)}. Checks again every hour.`
+    : "Linked ✓ · first check coming up.";
+}
+async function runCalSync() {
+  $("calErr").textContent = "Reading your calendar…";
+  const { data, error } = await db.functions.invoke("notify", { body: { type: "calsync" } });
+  $("calErr").textContent = error ? "Couldn't check the calendar: " + error.message
+    : data?.error ? "Couldn't read it: " + data.error
+    : `Done — ${data?.count ?? 0} entries are on the family board.`;
+  await paintCal();
+}
+$("calSave").addEventListener("click", async () => {
+  const url = $("calUrl").value.trim();
+  if (!/^(https?|webcal):\/\/\S+$/i.test(url)) return ($("calErr").textContent = "Paste the whole link. It starts with https:// or webcal://");
+  $("calErr").textContent = "Saving…";
+  const { error } = await db.from("calendar_links").upsert({ member_id: me.id, ics_url: url, busy_only: $("calBusy").checked }, { onConflict: "member_id" });
+  if (error) return ($("calErr").textContent = "Couldn't save: " + error.message);
+  $("calUrl").value = "";
+  await runCalSync();
+});
+$("calSync").addEventListener("click", runCalSync);
+$("calBusy").addEventListener("change", async () => {
+  if (!calLink) return;
+  const { error } = await db.from("calendar_links").update({ busy_only: $("calBusy").checked }).eq("member_id", me.id);
+  if (error) return ($("calErr").textContent = "Couldn't save: " + error.message);
+  await runCalSync();
+});
+$("calUnlink").addEventListener("click", async () => {
+  if (!confirm("Unlink your phone calendar? Its entries come off the family board.")) return;
+  $("calErr").textContent = "Unlinking…";
+  const { error } = await db.functions.invoke("notify", { body: { type: "calunlink" } });
+  $("calErr").textContent = error ? "Couldn't unlink: " + error.message : "Unlinked.";
+  await paintCal();
 });
 
 // ---------- profile (P2) ----------

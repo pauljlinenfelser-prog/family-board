@@ -260,10 +260,31 @@
       <button class="btn ghost hidden" id="pushOff">Turn off on this phone</button>
       <div class="err" id="pushErr"></div>
     </div>
+    <h2>My phone calendar</h2>
+    <div class="card">
+      <div class="sub" id="calState">Checking…</div>
+      <div id="calForm">
+        <label for="calUrl">Calendar link</label>
+        <input id="calUrl" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="Paste the link here">
+        <details class="sub" style="margin-top:10px"><summary style="color:var(--accent);cursor:pointer">Where do I find my calendar link?</summary>
+          <p><b>Google Calendar</b> (most Android phones): on a computer go to calendar.google.com &gt; ⚙ Settings &gt;
+          under "Settings for my calendars" click your calendar &gt; scroll down to "Integrate calendar" &gt; copy
+          <b>Secret address in iCal format</b>. Send it to your phone (text or email it to yourself) and paste it here.</p>
+          <p><b>iPhone Calendar (iCloud)</b>: open Calendar &gt; Calendars (bottom) &gt; tap ⓘ next to your calendar &gt;
+          turn on <b>Public Calendar</b> &gt; Share Link &gt; Copy, then paste it here. (Anyone who has that link could see that calendar.)</p>
+          <p>The family board only reads your calendar. Your link stays private to you.</p>
+        </details>
+      </div>
+      <div class="check"><input type="checkbox" id="calBusy"><label for="calBusy" style="margin:0;color:var(--text)">Show only "Busy" (hide what my appointments are)</label></div>
+      <button class="btn" id="calSave">Link my calendar</button>
+      <button class="btn ghost hidden" id="calSync">Check for changes now</button>
+      <button class="btn ghost hidden" id="calUnlink">Unlink my calendar</button>
+      <div class="err" id="calErr"></div>
+    </div>
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P26</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P27</p>
   </main>
 
   <div id="viewer" class="hidden"></div>
@@ -275,6 +296,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P26"></script>
+<script type="module" src="app.js?v=P27"></script>
 </body>
 </html>
