@@ -164,6 +164,13 @@
         <label for="bAcct">Account number (optional)</label>
         <input id="bAcct" placeholder="So nobody has to dig for it" autocapitalize="off" maxlength="40">
         <div class="sub" style="margin-top:4px">The family can see these. Don't put passwords or Social Security numbers here.</div>
+        <label for="bAutopay">How this bill gets paid</label>
+        <select id="bAutopay">
+          <option value="company">Pay the company (online, mail, phone)</option>
+          <option value="auto">Autopay — pay the bill administrator instead</option>
+        </select>
+        <label for="bPayNote">Payment note (optional, shown big on the TV and phone)</label>
+        <input id="bPayNote" maxlength="200" placeholder="Autopay on the 1st from our checking — send Mike your share">
         <label>Logo</label>
         <div class="row">
           <div id="bLogo" class="logo"></div>
@@ -212,6 +219,7 @@
           <label>Who has paid their share</label>
           <div id="whoPaid"></div>
           <div class="sub" style="margin-top:6px">Changes here save right away.</div>
+          <button class="btn ghost hidden" id="remindAll" type="button">🔔 Remind everyone who hasn't paid</button>
         </div>
         <button class="btn" id="saveBill">Save bill</button>
         <button class="btn ghost" id="cancelBill">Cancel</button>
@@ -253,7 +261,7 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P23</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P24</p>
   </main>
 
   <div id="viewer" class="hidden"></div>
@@ -265,6 +273,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P23"></script>
+<script type="module" src="app.js?v=P24"></script>
 </body>
 </html>

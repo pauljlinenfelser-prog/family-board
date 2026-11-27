@@ -109,7 +109,7 @@ async function loadBoard() {
   const [shares, mine, toConfirm, events] = await Promise.all([
     db.from("bill_share_amounts").select("id,bill_id,bill_name,bill_amount,share_amount,paid,paid_method,confirmed,due_date,member_id").eq("member_id", me.id)
       .lte("due_date", in30).or(windowFilter).order("due_date"),
-    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number").eq("owner_id", me.id)
+    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number,autopay,pay_note").eq("owner_id", me.id)
       .lte("due_date", in30).or(windowFilter).order("due_date"),
     canManage()
       ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
@@ -117,13 +117,13 @@ async function loadBoard() {
     db.from("events").select("id,title,kind,starts_at,ends_at,all_day,member_id,notes").lte("starts_at", in7 + "T23:59:59")
       .or(`starts_at.gte.${today},ends_at.gte.${today}`).order("starts_at").limit(30),
   ]);
-  const { data: others } = await db.from("bills").select("id,name,amount,due_date,owner_id,admin_id,logo_url,website,full_images,pay_url,account_number")
+  const { data: others } = await db.from("bills").select("id,name,amount,due_date,owner_id,admin_id,logo_url,website,full_images,pay_url,account_number,autopay,pay_note")
     .not("owner_id", "is", null).neq("owner_id", me.id).eq("paid", false).lte("due_date", in7).order("due_date");
   helpBills = (others || []).filter((b) => people[b.owner_id]);
   // logos + repeat info for the household bills behind my shares
   const billIds = [...new Set((shares.data || []).map((s) => s.bill_id))];
   const { data: shareBills } = billIds.length
-    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number").in("id", billIds)
+    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number,autopay,pay_note").in("id", billIds)
     : { data: [] };
   const billInfo = Object.fromEntries((shareBills || []).map((b) => [b.id, b]));
 
@@ -636,8 +636,16 @@ function normUrl(v) {
 }
 function payBox(info) {
   if (!info) return "";
-  const url = info.pay_url || (info.website ? "https://" + info.website : "");
   let h = "";
+  if (info.autopay) {
+    const adm = payeeFor(info);
+    const note = info.pay_note || `Paid automatically from ${adm?.display_name ?? "the bill administrator"}'s account. Don't pay the company — send ${adm?.display_name ?? "them"} your share.`;
+    h += `<div class="card" style="margin-top:12px;border:1px solid #2E6B3C"><div class="sub" style="margin:0;color:#7FD18B;font-weight:700">AUTOPAY</div>
+      <div style="font-size:17px;font-weight:600;margin-top:4px">${esc(note)}</div></div>`;
+    return h;
+  }
+  const url = info.pay_url || (info.website && info.website.includes(".") ? "https://" + info.website : "");
+  if (info.pay_note) h += `<div class="card" style="margin-top:12px"><div style="font-weight:600">${esc(info.pay_note)}</div></div>`;
   if (url) h += `<a class="btn ghost" href="${esc(url)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none">🌐 Pay online${info.pay_url ? "" : ` (${esc(info.website)})`}</a>`;
   if (info.account_number) h += `<div class="row" style="margin-top:12px"><div class="grow"><div class="sub" style="margin:0">Account number</div>
       <div style="font-weight:700;letter-spacing:1px">${esc(info.account_number)}</div></div>
@@ -1023,10 +1031,10 @@ async function loadBills() {
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
   const [bills, shares, sample, mine] = await Promise.all([
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images,admin_id,pay_url,account_number").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images,admin_id,pay_url,account_number,autopay,pay_note").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("id,bill_id,member_id,percent,fixed_amount,paid,paid_method,paid_on,confirmed"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images,admin_id,pay_url,account_number").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images,admin_id,pay_url,account_number,autopay,pay_note").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
   ]);
   const byBill = {};
   (shares.data || []).forEach((s) => (byBill[s.bill_id] ??= []).push(s));
@@ -1118,6 +1126,8 @@ function openEditor(bill, shares) {
   $("bSite").value = bill.website ?? "";
   $("bPayUrl").value = bill.pay_url ?? "";
   $("bAcct").value = bill.account_number ?? "";
+  $("bAutopay").value = bill.autopay ? "auto" : "company";
+  $("bPayNote").value = bill.pay_note ?? "";
   logoUrl = bill.logo_url ?? null;
   paintLogo();
   $("logoPicker").classList.add("hidden");
@@ -1208,8 +1218,44 @@ function reminderText(personName, billName, amount, due) {
 }
 function smsLink(phone, text) { return `sms:${phone}?body=${encodeURIComponent(text)}`; }
 
+// ---------- last reminded + remind everyone (P24) ----------
+function agoText(ts) {
+  const secs = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (secs < 120) return "just now";
+  if (secs < 3600) return Math.round(secs / 60) + "m ago";
+  if (secs < 86400) return Math.round(secs / 3600) + "h ago";
+  return Math.round(secs / 86400) + "d ago";
+}
+async function fillLastReminded(saved) {
+  if (!editing?.id) return;
+  const { data } = await db.from("reminder_log").select("member_id,created_at,via").eq("bill_id", editing.id).order("created_at", { ascending: false }).limit(50);
+  const last = {};
+  for (const r of data || []) last[r.member_id] ??= r;
+  for (const s of saved) {
+    const el = document.getElementById("rem-" + s.member_id);
+    if (el) el.textContent = last[s.member_id] ? `Last reminded ${agoText(last[s.member_id].created_at)}${last[s.member_id].via === "auto" ? " (automatic)" : last[s.member_id].via === "tv" ? " (from the TV)" : ""}` : "";
+  }
+  const unpaid = saved.filter((s) => !s.paid);
+  $("remindAll").classList.toggle("hidden", !unpaid.length || !!editing.paid);
+  $("remindAll").textContent = `🔔 Remind everyone who hasn't paid (${unpaid.length})`;
+}
+$("remindAll").addEventListener("click", async () => {
+  if (!editing?.id) return;
+  if (!confirm("Send a reminder notification to everyone who hasn't paid this bill?")) return;
+  $("remindAll").disabled = true;
+  const { data, error } = await db.functions.invoke("notify", { body: { type: "remind_bill", bill_id: editing.id } });
+  $("remindAll").disabled = false;
+  if (error) return ($("billErr").textContent = "Couldn't send: " + error.message);
+  $("billErr").style.color = "var(--paid)";
+  $("billErr").textContent = `Reminder sent to ${data?.people ?? 0} ${data?.people === 1 ? "person" : "people"}.`;
+  setTimeout(() => { $("billErr").textContent = ""; $("billErr").style.color = ""; }, 4000);
+  drawWhoPaid(editingShares || []);
+});
+
 // ---------- who has paid their share (P9): the admin can mark each person ----------
+let editingShares = null;
 function drawWhoPaid(shares) {
+  editingShares = shares;
   const saved = shares.filter((s) => s.id && people[s.member_id]);
   $("whoPaidBox").classList.toggle("hidden", !saved.length);
   if (!saved.length) return ($("whoPaid").innerHTML = "");
@@ -1226,6 +1272,7 @@ function drawWhoPaid(shares) {
         : `<div class="sub" style="grid-column:1/-1">${esc(p.display_name)} hasn't added a cell number yet (Me tab), so texting is off.</div>`;
       note += `<div style="grid-column:1/-1"><button type="button" class="chip" style="border:0;min-height:30px;color:var(--accent)" data-pushremind="${s.id}">🔔 Send ${esc(p.display_name)} a reminder notification</button></div>`;
     }
+    note += `<div class="sub" id="rem-${s.member_id}" style="grid-column:1/-1;margin:0"></div>`;
     return `<div class="split-row" style="grid-template-columns:1fr 170px">
       <span style="color:${esc(p.color)};font-weight:600">${esc(p.display_name)}${s.paid && s.confirmed ? " ✓" : ""}</span>
       <select data-paidshare="${s.id}">${opts.map(([v, t]) => `<option value="${v}" ${v === cur ? "selected" : ""}>${esc(t)}</option>`).join("")}</select>
@@ -1250,11 +1297,12 @@ function drawWhoPaid(shares) {
     const amt = shareAmount(editing, s, saved);
     const body = `Your share of ${editing.name} is ${money(amt)}, ${daysUntil(editing.due_date) < 0 ? "was due" : "due"} ${fmtDate(editing.due_date)}.`;
     b.disabled = true;
-    const { data, error } = await db.functions.invoke("notify", { body: { type: "remind", to: s.member_id, body } });
+    const { data, error } = await db.functions.invoke("notify", { body: { type: "remind", to: s.member_id, body, bill_id: editing.id } });
     b.disabled = false;
     if (error) return err("Couldn't send: " + error.message);
     b.textContent = data?.sent ? `✓ Sent to ${p.display_name}` : `${p.display_name} hasn't turned on notifications yet — try a text`;
   }));
+  fillLastReminded(saved);
   $("whoPaid").querySelectorAll("[data-okshare]").forEach((a) => a.addEventListener("click", async (e) => {
     e.preventDefault();
     const s = saved.find((x) => x.id === a.dataset.okshare);
@@ -1316,7 +1364,8 @@ $("saveBill").addEventListener("click", async () => {
   const repeat_days = repeat_kind === "days" ? parseInt($("bDays").value, 10) : null;
   if (repeat_kind === "days" && !(repeat_days >= 1 && repeat_days <= 365)) return ($("billErr").textContent = "Enter how many days between bills (1 to 365).");
   const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, logo_url: logoUrl, owner_id: null, admin_id: $("bAdmin").value || null,
-    pay_url: normUrl($("bPayUrl").value), account_number: $("bAcct").value.trim() || null };
+    pay_url: normUrl($("bPayUrl").value), account_number: $("bAcct").value.trim() || null,
+    autopay: $("bAutopay").value === "auto", pay_note: $("bPayNote").value.trim() || null };
   if (personal) Object.assign(fields, { owner_id: me.id, show_on_board: $("bShow").checked, split_method: "equal" });
   let billId = editing.id;
   if (billId) {
