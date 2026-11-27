@@ -300,7 +300,7 @@ async function loadBills() {
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
   const [bills, shares, sample] = await Promise.all([
-    db.from("bills").select("id,name,amount,due_date,repeats_monthly,split_method,website,paid").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,paid,next_bill_id").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("bill_id,member_id,percent,fixed_amount,paid"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
   ]);
@@ -318,7 +318,7 @@ async function loadBills() {
     const cls = b.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
     return `<div class="card row" ${canManage() ? `data-edit="${b.id}" style="cursor:pointer"` : ""}>
       <div class="grow"><div class="name">${esc(b.name)}</div>
-      <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${b.repeats_monthly ? " · monthly" : ""}</div>
+      <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${repeatLabel(b) ? " · " + repeatLabel(b) : ""}</div>
       <div class="sub">${who.length ? "Split: " + esc(who.join(", ")) : "Not split yet"}</div></div>
       <div class="amt">${money(b.amount)}</div></div>`;
   };
@@ -335,6 +335,24 @@ async function loadBills() {
   $("clearSample")?.addEventListener("click", clearSample);
 }
 
+function repeatLabel(b) {
+  switch (b.repeat_kind) {
+    case "weekly": return "weekly";
+    case "biweekly": return "every 2 weeks";
+    case "monthly": return "monthly";
+    case "days": return `every ${b.repeat_days} days`;
+    default: return "";
+  }
+}
+
+function showRepeatBits() {
+  $("bDaysBox").classList.toggle("hidden", $("bRepeat").value !== "days");
+  const willMakeNext = $("bRepeat").value !== "none" && $("bPaid").checked && !editing?.paid && !editing?.next_bill_id;
+  $("bPaidHint").textContent = willMakeNext ? "Saving will also add the next one to the list." : "";
+}
+$("bRepeat").addEventListener("change", showRepeatBits);
+$("bPaid").addEventListener("change", showRepeatBits);
+
 function familyList() {
   return Object.values(people).filter((p) => p.role !== "display");
 }
@@ -348,7 +366,10 @@ function openEditor(bill, shares) {
   $("bAmount").value = bill.amount ?? "";
   $("bDue").value = bill.due_date ?? localISO(new Date(Date.now() + 14 * 86400000));
   $("bSite").value = bill.website ?? "";
-  $("bRepeat").checked = bill.repeats_monthly ?? true;
+  $("bRepeat").value = bill.repeat_kind ?? "monthly";
+  $("bDays").value = bill.repeat_days ?? "";
+  $("bPaid").checked = !!bill.paid;
+  showRepeatBits();
   $("bMethod").value = bill.split_method ?? "equal";
   $("deleteBill").classList.toggle("hidden", !bill.id);
   $("billErr").textContent = "";
@@ -413,7 +434,10 @@ $("saveBill").addEventListener("click", async () => {
   if (method === "fixed" && Math.abs(rows.reduce((t, r) => t + r.val, 0) - amount) > 0.009) return ($("billErr").textContent = "Fixed amounts need to add up to the bill amount.");
 
   let site = $("bSite").value.trim().replace(/^https?:\/\//i, "").replace(/\/.*$/, "");
-  const fields = { name, amount, due_date: due, repeats_monthly: $("bRepeat").checked, split_method: method, website: site || null, owner_id: null };
+  const repeat_kind = $("bRepeat").value;
+  const repeat_days = repeat_kind === "days" ? parseInt($("bDays").value, 10) : null;
+  if (repeat_kind === "days" && !(repeat_days >= 1 && repeat_days <= 365)) return ($("billErr").textContent = "Enter how many days between bills (1 to 365).");
+  const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, owner_id: null };
   let billId = editing.id;
   if (billId) {
     const { error } = await db.from("bills").update(fields).eq("id", billId);
@@ -431,6 +455,12 @@ $("saveBill").addEventListener("click", async () => {
   const up = rows.map((r) => ({ bill_id: billId, member_id: r.id, percent: method === "percent" ? r.val : null, fixed_amount: method === "fixed" ? r.val : null }));
   const { error: shErr } = await db.from("bill_shares").upsert(up, { onConflict: "bill_id,member_id" });
   if (shErr) return ($("billErr").textContent = "Bill saved, but the split didn't: " + shErr.message);
+  // paid is saved last, so a repeating bill's next copy gets the split saved above
+  const paid = $("bPaid").checked;
+  if (paid !== !!editing.paid) {
+    const { error: pErr } = await db.from("bills").update({ paid }).eq("id", billId);
+    if (pErr) return ($("billErr").textContent = "Bill saved, but marking it paid didn't: " + pErr.message);
+  }
   loadBills();
 });
 

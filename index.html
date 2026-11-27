@@ -124,7 +124,19 @@
         </div>
         <label for="bSite">Company website (optional)</label>
         <input id="bSite" placeholder="consumersenergy.com" autocapitalize="off" inputmode="url">
-        <div class="check"><input type="checkbox" id="bRepeat" checked><label for="bRepeat" style="margin:0;color:var(--text)">Repeats monthly</label></div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+          <div><label for="bRepeat">Repeats</label>
+            <select id="bRepeat">
+              <option value="none">Doesn't repeat</option>
+              <option value="weekly">Every week</option>
+              <option value="biweekly">Every 2 weeks</option>
+              <option value="monthly">Every month</option>
+              <option value="days">Every … days</option>
+            </select></div>
+          <div id="bDaysBox" class="hidden"><label for="bDays">Number of days</label><input id="bDays" inputmode="numeric" placeholder="30"></div>
+        </div>
+        <div class="check"><input type="checkbox" id="bPaid"><label for="bPaid" style="margin:0;color:var(--text)">Paid in full</label></div>
+        <div id="bPaidHint" class="sub" style="margin-top:4px"></div>
         <label>Split between</label>
         <div id="splitPeople"></div>
         <label for="bMethod">How to split</label>
@@ -164,7 +176,7 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P6</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P7</p>
   </main>
 
   <nav>
@@ -175,6 +187,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P6"></script>
+<script type="module" src="app.js?v=P7"></script>
 </body>
 </html>
