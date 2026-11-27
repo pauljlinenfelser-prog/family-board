@@ -300,7 +300,7 @@ async function loadBills() {
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
   const [bills, shares, sample] = await Promise.all([
-    db.from("bills").select("id,name,amount,due_date,repeats_monthly,split_method,website,paid").is("owner_id", null).gte("due_date", monthStart).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeats_monthly,split_method,website,paid").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("bill_id,member_id,percent,fixed_amount,paid"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
   ]);
@@ -309,7 +309,10 @@ async function loadBills() {
   let html = `<h2>Household bills</h2>`;
   if (canManage()) html += `<button class="btn" id="newBill" style="margin:0 0 12px">+ Add a household bill</button>`;
   const rows = bills.data || [];
-  html += rows.length ? rows.map((b) => {
+  // unpaid bills whose due date has passed (any month) go in their own group at the top
+  const pastDue = rows.filter((b) => !b.paid && daysUntil(b.due_date) < 0);
+  const current = rows.filter((b) => !pastDue.includes(b));
+  const billRow = (b) => {
     const who = (byBill[b.id] || []).map((s) => people[s.member_id]?.display_name).filter(Boolean);
     const d = daysUntil(b.due_date);
     const cls = b.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
@@ -318,7 +321,9 @@ async function loadBills() {
       <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${b.repeats_monthly ? " · monthly" : ""}</div>
       <div class="sub">${who.length ? "Split: " + esc(who.join(", ")) : "Not split yet"}</div></div>
       <div class="amt">${money(b.amount)}</div></div>`;
-  }).join("") : `<div class="card sub">No household bills this month yet.</div>`;
+  };
+  if (pastDue.length) html += `<h2 class="late">Past due</h2>` + pastDue.map(billRow).join("") + `<h2>This month &amp; coming up</h2>`;
+  html += current.length ? current.map(billRow).join("") : `<div class="card sub">No household bills this month yet.</div>`;
   if (canManage()) html += `<p class="sub center">Tap a bill to edit it.</p>`;
   if (member?.role === "admin" && sample.count) html += `<button class="btn ghost" id="clearSample" style="margin-top:20px">Remove the sample data (${sample.count} sample bills)</button>`;
   $("billsList").innerHTML = html;
