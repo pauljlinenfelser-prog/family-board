@@ -296,6 +296,8 @@
         <button class="btn" id="bankLink">Link my bank</button>
       </div>
       <button class="btn ghost hidden" id="bankSync">Check for changes now</button>
+      <a class="btn ghost hidden" id="bankAdd" href="https://beta-bridge.simplefin.org/my-account" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none">+ Add another bank (opens SimpleFIN)</a>
+      <div class="sub hidden" id="bankAddHint" style="margin-top:6px">Add the bank on SimpleFIN's site (you sign in to your bank there, never here). Then come back and tap "Check for changes now" - no new code needed.</div>
       <div id="bankAccts"></div>
       <div class="err" id="bankErr"></div>
     </div>
@@ -310,7 +312,7 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P43</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P44</p>
   </main>
 
   <div id="viewer" class="hidden"></div>
@@ -322,6 +324,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P43"></script>
+<script type="module" src="app.js?v=P44"></script>
 </body>
 </html>

@@ -156,7 +156,7 @@ async function loadBoard() {
   let html = `<div class="tiles">
       <div class="tile"><div class="sub">Left to pay · next 30 days</div><div class="tnum">${money(left)}</div></div>
       <div class="tile ${late ? "tile-late" : ""}"><div class="sub">${late ? "Past due" : "Past due"}</div><div class="tnum">${money(late)}</div></div>
-    </div><div id="bankSugs"></div>`;
+    </div><div id="bankStrip"></div><div id="bankSugs"></div>`;
 
   // ---- wallet: my unpaid bills as stacked cards, oldest first ----
   // P34: late + current copies of the same bill share one card (oldest first, total owed)
@@ -1149,6 +1149,17 @@ async function fillBankBox() {
   if (!el) return;
   const { data } = await db.from("bank_accounts").select("id,org_name,name,balance,available,balance_date,owner_id,co_owner_id").eq("hidden", false).order("org_name");
   if (!data?.length) return;
+  // P44: a strip near the top so the bank is easy to find
+  const strip = $("bankStrip");
+  if (strip) {
+    const total = data.reduce((t, a) => t + Number(a.balance || 0), 0);
+    strip.innerHTML = `<div class="card row" style="padding:10px 14px;margin-top:10px">
+      <div class="grow"><div class="sub" style="margin:0">Bank · ${data.length} account${data.length === 1 ? "" : "s"}</div><div style="font-size:20px;font-weight:700">${money(total)}</div></div>
+      <button class="chip" id="bsAccts" style="border:0;min-height:38px;margin-right:8px">Accounts ›</button>
+      <button class="chip" id="bsSpend" style="border:0;min-height:38px">Spending ›</button></div>`;
+    $("bsAccts").addEventListener("click", () => openBankList(data));
+    $("bsSpend").addEventListener("click", () => openSpending(0));
+  }
   el.innerHTML = `<h2 class="row" style="justify-content:space-between">Bank balances <a href="#" data-spend="1" class="hlink">Spending ›</a></h2>` + data.map((a) => `<div class="card row" data-acct="${esc(a.id)}" style="cursor:pointer">
       <div class="grow"><div class="name">${esc(acctLabel(a))}</div>
       <div class="sub" style="margin:0">${a.co_owner_id ? esc([people[a.owner_id]?.display_name, people[a.co_owner_id]?.display_name].filter(Boolean).join(" & ")) + " · joint · " : a.owner_id && a.owner_id !== me.id ? esc(people[a.owner_id]?.display_name ?? "") + " · " : ""}${a.balance_date ? "as of " + esc(agoText(a.balance_date)) : ""}${a.available != null && a.available !== a.balance ? ` · available ${money(a.available)}` : ""}</div></div>
@@ -1399,6 +1410,19 @@ function drawSpending() {
   $("spendQ").addEventListener("input", runSearch);
   if (st.q) runSearch();
 }
+// P44: all my visible accounts on one page; tap one for its transactions
+function openBankList(data) {
+  $("tab-board").innerHTML = `<h2 class="row" style="justify-content:space-between">Bank accounts <a href="#" id="blSpend" class="hlink">Spending ›</a></h2>` +
+    data.map((a) => `<div class="card row" data-acct2="${esc(a.id)}" style="cursor:pointer">
+      <div class="grow"><div class="name">${esc(acctLabel(a))}</div>
+      <div class="sub" style="margin:0">${a.co_owner_id ? esc([people[a.owner_id]?.display_name, people[a.co_owner_id]?.display_name].filter(Boolean).join(" & ")) + " · joint · " : a.owner_id && a.owner_id !== me.id ? esc(people[a.owner_id]?.display_name ?? "") + " · " : ""}${a.balance_date ? "as of " + esc(agoText(a.balance_date)) : ""}</div></div>
+      <div class="amt" style="${Number(a.balance) < 0 ? "color:var(--red)" : ""}">${money(a.balance)}</div></div>`).join("") +
+    `<button class="btn ghost" data-back="1">Back</button>`;
+  window.scrollTo(0, 0);
+  $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+  $("blSpend").addEventListener("click", (e) => { e.preventDefault(); openSpending(0); });
+  $("tab-board").querySelectorAll("[data-acct2]").forEach((r) => r.addEventListener("click", () => openBankAccount(data.find((a) => a.id === r.dataset.acct2))));
+}
 async function openBankAccount(a) {
   $("tab-board").innerHTML = `<h2>${esc(acctLabel(a))}</h2><div class="card"><div class="sub">Balance</div><div class="big">${money(a.balance)}</div>
     ${a.available != null ? `<div class="sub">Available ${money(a.available)}</div>` : ""}</div><div id="txList" class="sub">Loading…</div><button class="btn ghost" data-back="1">Back</button>`;
@@ -1419,6 +1443,9 @@ async function paintBank() {
   const myLinks = links || [];
   const mine = new Set(myLinks.map((l) => l.id));
   $("bankSync").classList.toggle("hidden", !myLinks.length);
+  // P44: banks can only be added on SimpleFIN's own site; the existing link picks them up
+  $("bankAdd").classList.toggle("hidden", !myLinks.length);
+  $("bankAddHint").classList.toggle("hidden", !myLinks.length);
   const last = myLinks.map((l) => l.last_sync).filter(Boolean).sort().pop();
   const err = myLinks.map((l) => l.last_error).filter(Boolean)[0];
   $("bankState").innerHTML = !myLinks.length
