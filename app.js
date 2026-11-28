@@ -64,6 +64,8 @@ async function start(user) {
   paintBank().catch(() => {});
   paintLinks();
   $("meEmail").textContent = user.email;
+  paintAvatar($("meSmall"), member);
+  $("meLine").textContent = `${member?.display_name ?? ""} · ${user.email}`;
   $("meRole").textContent = member?.role === "admin" ? "Admin" : member?.bill_manager ? "Bill manager" : "Family member";
   fillNoteTo();
   loadBoard();
@@ -1464,15 +1466,17 @@ async function paintBank() {
       <div class="row" style="gap:8px"><button class="btn" data-joint="${esc(a.id)}" data-partner="${partner.id}" style="margin:0">Yes, joint</button>
       <button class="btn ghost" data-notjoint="${esc(a.id)}" style="margin:0">No, just ${esc(people[a.owner_id].display_name)}'s</button></div></div>`;
   }).join("");
-  $("bankAccts").innerHTML = askHtml + editable.map((a) => `<div style="border-top:1px solid rgba(255,255,255,.08);margin-top:12px;padding-top:10px">
-      <div class="row"><div class="grow" style="font-weight:600">${esc(acctLabel(a))}</div><b>${money(a.balance)}</b></div>
+  const bankTotal = editable.reduce((t, a) => t + Number(a.balance || 0), 0);
+  if ($("bankLine")) $("bankLine").textContent = editable.length ? `${editable.length} account${editable.length === 1 ? "" : "s"} · ${money(bankTotal)} · shared money` : "Link your bank · shared money";
+  $("bankAccts").innerHTML = askHtml + editable.map((a) => `<details class="acct" style="border-top:1px solid rgba(255,255,255,.08);margin-top:6px">
+      <summary><div class="grow" style="font-weight:600">${esc(acctLabel(a))}</div><b>${money(a.balance)}</b><span class="chev" style="font-size:20px">›</span></summary>
       <div class="split-row" style="grid-template-columns:1fr 1fr;margin-top:6px">
         <select data-aown="${esc(a.id)}">${fam.map((p) => `<option value="${p.id}" ${p.id === a.owner_id ? "selected" : ""}>Owner: ${esc(p.display_name)}</option>`).join("")}</select>
         <select data-avis="${esc(a.id)}">${Object.entries(VIS).map(([k, t]) => `<option value="${k}" ${k === a.visibility ? "selected" : ""}>${t}</option>`).join("")}</select>
       </div>
       <select data-aco="${esc(a.id)}" style="margin-top:6px"><option value="">Not a joint account</option>${fam.filter((p) => p.id !== a.owner_id).map((p) => `<option value="${p.id}" ${p.id === a.co_owner_id ? "selected" : ""}>Joint with ${esc(p.display_name)}</option>`).join("")}</select>
       <div class="check" style="margin-top:4px"><input type="checkbox" data-ahide="${esc(a.id)}" ${a.hidden ? "checked" : ""}><label style="margin:0;color:var(--text)">Hide on the Board</label></div>
-      <div class="check" style="margin-top:2px"><input type="checkbox" data-atv="${esc(a.id)}" ${a.show_on_tv ? "checked" : ""}><label style="margin:0;color:var(--text)">Show on the TV${a.visibility === "everyone" ? "" : " (only works when shared with Everyone)"}</label></div></div>`).join("") +
+      <div class="check" style="margin-top:2px"><input type="checkbox" data-atv="${esc(a.id)}" ${a.show_on_tv ? "checked" : ""}><label style="margin:0;color:var(--text)">Show on the TV${a.visibility === "everyone" ? "" : " (only works when shared with Everyone)"}</label></div></details>`).join("") +
     myLinks.map((l) => `<button class="btn ghost" data-unbank="${l.id}" style="color:var(--red);margin-top:12px">Unlink this SimpleFIN connection</button>`).join("");
   const save = async (id, fields) => {
     const { error } = await db.from("bank_accounts").update(fields).eq("id", id);
@@ -1563,6 +1567,9 @@ $("saveProfile").addEventListener("click", async () => {
   $("hello").textContent = `Hi, ${name}`;
   paintAvatar($("me"), member);
   $("profErr").style.color = "var(--paid)"; $("profErr").textContent = "Saved ✓";
+  paintAvatar($("meSmall"), member);
+  if ($("meLine")) $("meLine").textContent = `${name} · ${me.email ?? ""}`;
+  setTimeout(() => { $("dProfile").open = false; }, 900);
   setTimeout(() => { $("profErr").textContent = ""; $("profErr").style.color = ""; }, 2500);
 });
 

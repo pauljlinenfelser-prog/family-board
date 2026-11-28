@@ -18,6 +18,18 @@
   main { padding: 0 16px 96px; max-width: 560px; margin: 0 auto; }
   .avatar { width:40px; height:40px; border-radius:20px; display:flex; align-items:center; justify-content:center; font-weight:700; color:#101216; border:0; font-size:16px; }
   .card { background: var(--panel); border-radius: 16px; padding: 16px; margin-bottom: 10px; }
+  .drawer { background: var(--panel); border-radius: 16px; margin-bottom: 10px; }
+  .drawer > summary { list-style: none; display: flex; align-items: center; gap: 14px; padding: 14px 16px; cursor: pointer; }
+  .drawer > summary::-webkit-details-marker { display: none; }
+  .drawer .dtitle { font-weight: 700; font-size: 17px; }
+  .drawer .dicon { width: 46px; height: 46px; border-radius: 23px; background: rgba(255,255,255,.08); display: flex; align-items: center; justify-content: center; font-size: 22px; }
+  .drawer .chev { font-size: 26px; color: var(--muted, #8A919E); transition: transform .2s; }
+  .drawer[open] .chev { transform: rotate(90deg); }
+  .drawer .dbody { padding: 0 16px 16px; }
+  .drawer h3 { font-size: 15px; margin: 6px 0 8px; }
+  .acct > summary { list-style: none; display: flex; align-items: center; gap: 10px; padding: 10px 0; cursor: pointer; }
+  .acct > summary::-webkit-details-marker { display: none; }
+
   .row { display:flex; align-items:center; gap:12px; }
   .grow { flex:1; min-width:0; }
   .name { font-size:16px; font-weight:600; }
@@ -231,8 +243,11 @@
     </div>
   </main>
   <main id="tab-me" class="hidden">
-    <h2>Your profile</h2>
-    <div class="card">
+    <!-- P45: the Me page is three drawers - tap a heading to open or close it -->
+    <details class="drawer" id="dProfile">
+      <summary><div id="meSmall" class="avatar" style="width:46px;height:46px;border-radius:23px;font-size:19px;background-size:cover;background-position:center"></div>
+        <div class="grow"><div class="dtitle">Profile</div><div class="sub" style="margin:0" id="meLine"></div></div><span class="chev">›</span></summary>
+      <div class="dbody">
       <div class="row" style="gap:16px">
         <div id="bigAvatar" class="avatar" style="width:88px;height:88px;border-radius:44px;font-size:34px;background-size:cover;background-position:center"></div>
         <div class="grow">
@@ -251,17 +266,20 @@
       <input id="profPhone" type="tel" inputmode="tel" placeholder="989-555-0123" maxlength="20">
       <button class="btn" id="saveProfile">Save profile</button>
       <div class="err" id="profErr"></div>
-    </div>
-    <h2>Phone notifications</h2>
-    <div class="card">
+        <div class="sub" id="meEmail" style="margin-top:14px"></div><div class="sub" id="meRole"></div>
+        <button class="btn ghost" id="signOut">Sign out</button>
+      </div>
+    </details>
+    <details class="drawer" id="dSettings">
+      <summary><div class="dicon">⚙</div><div class="grow"><div class="dtitle">Settings</div><div class="sub" style="margin:0">Phone notifications · phone calendar</div></div><span class="chev">›</span></summary>
+      <div class="dbody">
+        <h3>Phone notifications</h3>
       <div class="sub" id="pushState">Checking…</div>
       <button class="btn" id="pushOn">Turn on notifications</button>
       <button class="btn ghost hidden" id="pushTest">Send me a test</button>
       <button class="btn ghost hidden" id="pushOff">Turn off on this phone</button>
       <div class="err" id="pushErr"></div>
-    </div>
-    <h2>My phone calendar</h2>
-    <div class="card">
+        <h3 style="margin-top:20px">My phone calendar</h3>
       <div class="sub" id="calState">Checking…</div>
       <div id="calForm">
         <label for="calUrl">Calendar link</label>
@@ -280,9 +298,11 @@
       <button class="btn ghost hidden" id="calSync">Check for changes now</button>
       <button class="btn ghost hidden" id="calUnlink">Unlink my calendar</button>
       <div class="err" id="calErr"></div>
-    </div>
-    <h2>My bank</h2>
-    <div class="card">
+      </div>
+    </details>
+    <details class="drawer" id="dBank">
+      <summary><div class="dicon">🏦</div><div class="grow"><div class="dtitle">Banking</div><div class="sub" style="margin:0" id="bankLine">Your banks · shared money</div></div><span class="chev">›</span></summary>
+      <div class="dbody">
       <div class="sub" id="bankState">Checking…</div>
       <div id="bankForm">
         <label for="bankToken">SimpleFIN setup code</label>
@@ -300,19 +320,15 @@
       <div class="sub hidden" id="bankAddHint" style="margin-top:6px">Add the bank on SimpleFIN's site (you sign in to your bank there, never here). Then come back and tap "Check for changes now" - no new code needed.</div>
       <div id="bankAccts"></div>
       <div class="err" id="bankErr"></div>
-    </div>
-    <div id="linkBox" class="hidden">
-      <h2>Shared money</h2>
-      <div class="card">
-        <div class="sub">Link two people who share a bank account. When one marks their share of a household bill paid, the other's share is marked paid too. Undo works for both.</div>
+        <div id="linkBox" class="hidden">
+          <h3 style="margin-top:20px">Shared money</h3>
+          <div class="sub">Link two people who share a bank account. When one marks their share of a household bill paid, the other's share is marked paid too. Undo works for both.</div>
         <div id="linkRows"></div>
         <div class="err" id="linkErr"></div>
+        </div>
       </div>
-    </div>
-    <h2>Account</h2>
-    <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
-    <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P44</p>
+    </details>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P45</p>
   </main>
 
   <div id="viewer" class="hidden"></div>
@@ -324,6 +340,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P44"></script>
+<script type="module" src="app.js?v=P45"></script>
 </body>
 </html>
