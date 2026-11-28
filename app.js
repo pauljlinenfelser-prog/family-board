@@ -125,20 +125,32 @@ async function loadBoard() {
   // logos + repeat info for the household bills behind my shares
   const billIds = [...new Set((shares.data || []).map((s) => s.bill_id))];
   const { data: shareBills } = billIds.length
-    ? await db.from("bills").select("id,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number,autopay,pay_note").in("id", billIds)
+    ? await db.from("bills").select("id,amount,paid,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number,autopay,pay_note").in("id", billIds)
     : { data: [] };
   const billInfo = Object.fromEntries((shareBills || []).map((b) => [b.id, b]));
+  // P35: everyone's shares on those bills, so the person being paid sees how much has come in
+  const { data: allShares } = billIds.length
+    ? await db.from("bill_share_amounts").select("bill_id,share_amount,paid").in("bill_id", billIds)
+    : { data: [] };
+  const collected = {};
+  (allShares || []).forEach((x) => { if (x.paid) collected[x.bill_id] = (collected[x.bill_id] || 0) + Number(x.share_amount || 0); });
+  const payeeIsMe = (info) => { const p = payeeFor(info); return !!p && (p.id === me.id || member?.linked_with === p.id); };
 
   const waiting = toConfirm.data || [];
   const items = [
     ...(shares.data || []).map((s) => ({ shareId: s.id, billId: s.bill_id, name: s.bill_name, amount: Number(s.share_amount), billAmount: Number(s.bill_amount),
-      paid: s.paid, method: s.paid_method, confirmed: s.confirmed, due: s.due_date, kind: "household", info: billInfo[s.bill_id] || {} })),
+      paid: s.paid, method: s.paid_method, confirmed: s.confirmed, due: s.due_date, kind: "household", info: billInfo[s.bill_id] || {},
+      billPaid: !!billInfo[s.bill_id]?.paid, payeeMe: payeeIsMe(billInfo[s.bill_id]), collected: collected[s.bill_id] || 0 })),
     ...(mine.data || []).map((b) => ({ personalId: b.id, bill: b, name: b.name, amount: Number(b.amount), paid: b.paid, due: b.due_date,
       kind: b.show_on_board ? "personal" : "private", info: b })),
   ].sort((a, b) => a.due.localeCompare(b.due));
-  const open = items.filter((i) => !i.paid);
-  const left = open.reduce((t, i) => t + i.amount, 0);
-  const late = open.filter((i) => daysUntil(i.due) < 0).reduce((t, i) => t + i.amount, 0);
+  // P35: a share being paid isn't the bill being paid. The bill administrator keeps the card
+  // until they mark the bill itself paid (to the company).
+  const keepForBill = (i) => i.kind === "household" && i.paid && i.payeeMe && !i.billPaid && canManage();
+  const open = items.filter((i) => !i.paid || keepForBill(i));
+  const owe = open.filter((i) => !i.paid);
+  const left = owe.reduce((t, i) => t + i.amount, 0);
+  const late = owe.filter((i) => daysUntil(i.due) < 0).reduce((t, i) => t + i.amount, 0);
 
   let html = `<div class="tiles">
       <div class="tile"><div class="sub">Left to pay · next 30 days</div><div class="tnum">${money(left)}</div></div>
@@ -160,7 +172,7 @@ async function loadBoard() {
   } else {
     html += `<div class="card center" style="padding:26px 16px"><div class="big" style="font-size:22px">All paid up ✓</div><div class="sub">Nothing due in the next 30 days.</div></div>`;
   }
-  const paidItems = items.filter((i) => i.paid);
+  const paidItems = items.filter((i) => i.paid && !keepForBill(i));
   if (paidItems.length) html += `<details class="paidlist"><summary class="sub">Paid in the last 30 days (${paidItems.length})</summary>${paidItems.map(itemRow).join("")}</details>`;
 
   if (waiting.length) {
@@ -216,11 +228,13 @@ function walletCard(i, k, step) {
     : `<div class="wlogo" style="background-color:${fg};color:${bg}">${esc(i.name.slice(0, 1).toUpperCase())}</div>`;
   const sub = [i.kind === "household" ? "Household" : i.kind === "private" ? "🔒 Private" : "Personal", repeatLabel(i.info), i.info?.autopay ? "Autopay" : ""].filter(Boolean).join(" · ");
   const many = i.group && i.group.length > 1;
-  let pill = i.kind === "household" ? `Bill ${money(i.billAmount)}` : "Tap to mark paid";
+  let pill = i.kind === "household" ? `Total due ${money(i.billAmount)}` : "Tap to mark paid";
+  if (i.kind === "household" && i.paid) pill = "Bill not paid yet";
   if (many) pill = `${i.group.length} unpaid · total ${money(i.group.reduce((t, x) => t + x.amount, 0))}`;
   return `<div class="wcard" data-card="${key}" style="top:${k * step}px;z-index:${k + 1};background:${bg};color:${fg}">
     <div class="row">${logo}<div class="grow"><div class="name">${esc(i.name)}</div><div style="font-size:12px;color:${soft}">${esc(sub)}</div></div></div>
-    <div class="wamt">${money(many ? i.group.reduce((t, x) => t + x.amount, 0) : i.amount)}${i.kind === "household" ? `<span style="font-size:12px;font-weight:600;color:${soft}"> ${many ? "you owe" : "your share"}</span>` : ""}</div>
+    <div class="wamt">${money(many ? i.group.reduce((t, x) => t + x.amount, 0) : i.amount)}${i.kind === "household" ? `<span style="font-size:12px;font-weight:600;color:${soft}"> ${many ? "you owe" : i.paid ? "your share · paid ✓" : "your share"}</span>` : ""}</div>
+    ${i.kind === "household" && i.payeeMe ? `<div style="font-size:12px;color:${soft};margin-top:-2px">Collected ${money(i.collected)} of ${money(i.billAmount)}</div>` : ""}
     <div class="row" style="justify-content:space-between;margin-top:6px"><span style="font-size:13px">${esc(dueLabel(i.due))}</span>
       <span class="wpill" style="background:${fg};color:${bg}">${esc(pill)}</span></div></div>`;
 }
@@ -809,7 +823,9 @@ function openShare(i) {
   }
   let h = `<h2>${esc(i.name)}</h2><div class="card">
     <div class="sub">Your share</div><div class="big">${money(i.amount)}</div>
-    <div class="sub">${i.paid ? (i.confirmed ? "Paid ✓ · confirmed" : "Paid · " + esc(methodLabel(i.method, i.info))) : dueLabel(i.due)}</div>`;
+    <div class="sub">${i.paid ? (i.confirmed ? "Your share paid ✓ · confirmed" : "Your share paid · " + esc(methodLabel(i.method, i.info))) : dueLabel(i.due)}</div>
+    <div class="sub" style="margin-top:6px">Total bill ${money(i.billAmount)} · ${i.info?.paid ? `<span style="color:var(--paid)">paid to the company ✓</span>` : "not paid to the company yet"}</div>`;
+  const canPayBill = !i.info?.paid && canManage() && payeeFor(i.info)?.id === me.id;
   if (!i.paid) {
     if (link) h += `<a class="btn" href="${esc(link)}" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;text-decoration:none;background:#00D64F;color:#04210F">Pay ${money(i.amount)} with Cash App</a>
       <div class="sub center" style="margin-top:6px">Opens Cash App to ${esc(pay.display_name)}. Come back and tap "I paid with Cash App".</div>`;
@@ -826,6 +842,7 @@ function openShare(i) {
   } else if (!i.confirmed) {
     h += `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — I haven't paid this yet</button>`;
   }
+  if (canPayBill) h += `<button class="btn" id="payWholeBill" style="margin-top:12px">${i.info?.autopay ? "The bill came out — mark it paid" : "I paid the whole bill — mark it paid"}</button>`;
   const sibs = boardItems.filter((x) => !x.paid && x !== i && groupKey(x) === groupKey(i)).sort((a, b) => a.due.localeCompare(b.due));
   if (sibs.length) h += `<div class="card" style="margin-top:12px"><div class="sub" style="margin:0 0 6px">Also unpaid for ${esc(i.name)}</div>` +
     sibs.map((x) => `<button type="button" class="btn ghost" data-sib="${x.shareId ? "s:" + x.shareId : "p:" + x.personalId}" style="margin-top:6px">${esc(dueLabel(x.due))} · ${money(x.amount)} — open</button>`).join("") + `</div>`;
@@ -838,6 +855,12 @@ function openShare(i) {
   window.scrollTo(0, 0);
   $("tab-board").querySelectorAll("[data-pay]").forEach((b) => b.addEventListener("click", () => markShare(i, b.dataset.pay)));
   $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+  $("payWholeBill")?.addEventListener("click", async () => {
+    if (!confirm(`Mark ${i.name} (${money(i.billAmount)}) as paid to the company?` + (i.info?.repeat_kind && i.info.repeat_kind !== "none" ? " The next one will be added." : ""))) return;
+    const { error } = await db.from("bills").update({ paid: true, paid_on: localISO() }).eq("id", i.billId);
+    if (error) return ($("shareErr").textContent = "Couldn't save: " + error.message);
+    loadBoard();
+  });
   $("tab-board").querySelectorAll("[data-sib]").forEach((b) => b.addEventListener("click", () => {
     const x = boardItems.find((y) => (y.shareId ? "s:" + y.shareId : "p:" + y.personalId) === b.dataset.sib);
     if (x) openShare(x);
