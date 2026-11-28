@@ -1161,8 +1161,13 @@ async function fillBankBox() {
 async function fillBankSuggestions() {
   const el = $("bankSugs");
   if (!el) return;
-  const { data } = await db.from("bank_matches").select("id,kind,title,detail,account_id,tx_id,posted").eq("status", "new").order("posted", { ascending: false }).limit(20);
-  if (!data?.length) return (el.innerHTML = "");
+  const [{ data }, { data: rec }] = await Promise.all([
+    db.from("bank_matches").select("id,kind,title,detail,account_id,tx_id,posted").eq("status", "new").order("posted", { ascending: false }).limit(20),
+    // P41: regular charges that aren't bills yet, and ones whose price just went up
+    db.from("bank_recurring").select("id,name,cadence,amount,prev_amount,day_of_month,next_date,known_bill,status,price_up_seen")
+      .or("and(status.eq.new,known_bill.eq.false),price_up_seen.eq.false").order("amount", { ascending: false }).limit(8),
+  ]);
+  if (!data?.length && !rec?.length) return (el.innerHTML = "");
   const groups = [];
   const byTx = {};
   for (const x of data) {
@@ -1170,7 +1175,21 @@ async function fillBankSuggestions() {
     if (!byTx[key]) { byTx[key] = { kind: x.kind, detail: x.detail, items: [] }; groups.push(byTx[key]); }
     byTx[key].items.push(x);
   }
-  el.innerHTML = `<h2>From your bank</h2>` + groups.slice(0, 6).map((g) => {
+  const ups = (rec || []).filter((r) => !r.price_up_seen);
+  const news = (rec || []).filter((r) => r.price_up_seen && r.status === "new" && !r.known_bill);
+  const every = { monthly: "monthly", biweekly: "every 2 weeks", weekly: "weekly" };
+  const ord = (n) => n + (n % 10 === 1 && n !== 11 ? "st" : n % 10 === 2 && n !== 12 ? "nd" : n % 10 === 3 && n !== 13 ? "rd" : "th");
+  const recHtml = ups.map((r) => `<div class="card" style="border:1px solid var(--red)">
+      <div style="font-weight:600">${esc(r.name)} went up ${money(Number(r.amount) - Number(r.prev_amount))}</div>
+      <div class="sub" style="margin:4px 0 8px">Was ${money(r.prev_amount)}, now ${money(r.amount)} · ${every[r.cadence] || r.cadence}</div>
+      <button class="btn ghost" data-recok="${r.id}" style="margin:0">Got it</button></div>`).join("") +
+    news.map((r) => `<div class="card" style="border:1px solid var(--accent)">
+      <div style="font-weight:600">${esc(r.name)} · ${money(r.amount)} ${every[r.cadence] || r.cadence}${r.cadence === "monthly" && r.day_of_month ? " around the " + ord(r.day_of_month) : ""} — add as a bill?</div>
+      <div class="sub" style="margin:4px 0 8px">Found in your bank as a regular charge. Next one about ${esc(fmtDate(r.next_date))}.</div>
+      <button class="btn" data-recadd="${r.id}" data-house="0" style="margin:0 0 8px">Add as my bill</button>
+      ${canManage() ? `<button class="btn ghost" data-recadd="${r.id}" data-house="1" style="margin:0 0 8px">Add as a household bill</button>` : ""}
+      <button class="btn ghost" data-recno="${r.id}" style="margin:0">Not a bill</button></div>`).join("");
+  el.innerHTML = `<h2>From your bank</h2>` + recHtml + groups.slice(0, 6).map((g) => {
     if (g.kind === "bill_paid") {
       const x = g.items[0];
       return `<div class="card" style="border:1px solid var(--accent)"><div style="font-weight:600">${esc(x.title)} — mark it paid?</div>
@@ -1190,6 +1209,28 @@ async function fillBankSuggestions() {
     const { error } = await db.rpc("bank_match_answer", { p_match: b.dataset.sug, p_yes: true });
     if (error) { b.disabled = false; return alert("Couldn't save: " + error.message); }
     loadBoard();
+  }));
+  el.querySelectorAll("[data-recok]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    await db.rpc("bank_recurring_answer", { p_id: b.dataset.recok, p_action: "seen" });
+    loadBoard();
+  }));
+  el.querySelectorAll("[data-recno]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    await db.rpc("bank_recurring_answer", { p_id: b.dataset.recno, p_action: "ignored" });
+    loadBoard();
+  }));
+  el.querySelectorAll("[data-recadd]").forEach((b) => b.addEventListener("click", async () => {
+    const r = (rec || []).find((x) => x.id === b.dataset.recadd);
+    if (!r) return;
+    b.disabled = true;
+    await db.rpc("bank_recurring_answer", { p_id: r.id, p_action: "added" });
+    // open the bill editor filled in - check it and tap Save
+    const pre = { name: r.name, amount: Number(r.amount), due_date: r.next_date, repeat_kind: r.cadence, show_on_board: true };
+    if (b.dataset.house !== "1") pre.owner_id = me.id;
+    document.querySelector('nav button[data-tab="bills"]').click();
+    await new Promise((ok) => setTimeout(ok, 900));
+    openEditor(pre, []);
   }));
   el.querySelectorAll("[data-sugno]").forEach((b) => b.addEventListener("click", async () => {
     b.disabled = true;
