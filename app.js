@@ -55,6 +55,7 @@ async function start(user) {
   }
   $("setpw").classList.add("hidden");
   $("app").classList.remove("hidden");
+  playWalletIntro();
   $("hello").textContent = `Hi, ${member?.display_name ?? "there"}`;
   $("today").textContent = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
   await paintAvatar($("me"), member);
@@ -70,6 +71,18 @@ async function start(user) {
   fillNoteTo();
   loadBoard();
   loadNotes();
+}
+
+// ---------- P47: a wallet that opens when the app starts (once per opening) ----------
+function playWalletIntro() {
+  const el = $("intro");
+  if (!el || sessionStorage.getItem("fbIntro") || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  sessionStorage.setItem("fbIntro", "1");
+  el.classList.remove("hidden");
+  setTimeout(() => el.classList.add("open"), 350);
+  setTimeout(() => el.classList.add("gone"), 1250);
+  setTimeout(() => el.classList.add("hidden"), 1750);
+  el.addEventListener("click", () => el.classList.add("hidden"), { once: true });
 }
 
 // ---------- first sign-in password (P4) ----------
@@ -176,7 +189,6 @@ async function loadBoard() {
     html += `<div class="card center" style="padding:26px 16px"><div class="big" style="font-size:22px">All paid up ✓</div><div class="sub">Nothing due in the next 30 days.</div></div>`;
   }
   const paidItems = items.filter((i) => i.paid && !keepForBill(i));
-  html += `<div id="bankBox"></div>`;
   if (paidItems.length) html += `<details class="paidlist"><summary class="sub">Paid in the last 30 days (${paidItems.length})</summary>${paidItems.map(itemRow).join("")}</details>`;
 
   if (waiting.length) {
@@ -202,8 +214,10 @@ async function loadBoard() {
   }
   html += weekStrip(events.data || [], open, today);
 
-  html += `<h2 class="row" style="justify-content:space-between">Family photos <span><a href="#" data-allph="1" class="hlink" style="margin-right:14px">See all</a><a href="#" data-addph="1" class="hlink">+ Add</a></span></h2>
-    <div id="homePhotos" class="phgrid"><div class="sub">Loading photos…</div></div>`;
+  html += `<div class="card row" data-allph="1" style="cursor:pointer;margin-top:14px;padding:12px 14px">
+      <div class="dicon" style="width:46px;height:46px;border-radius:23px;background:rgba(255,255,255,.08);display:flex;align-items:center;justify-content:center;font-size:22px">📷</div>
+      <div class="grow"><div style="font-weight:700">Photo album</div><div class="sub" style="margin:0" id="homePhotos">Family photos</div></div>
+      <a href="#" data-addph="1" class="hlink" style="margin-right:6px">+ Add</a><span style="font-size:24px;color:#8A919E">›</span></div>`;
 
   $("tab-board").innerHTML = html;
   boardItems = items;
@@ -429,15 +443,12 @@ async function signPhotos(rows) {
   const { data } = await db.storage.from("family-photos").createSignedUrls(rows.map((r) => r.path), 3600);
   return Object.fromEntries((data || []).filter((d) => d.signedUrl).map((d) => [d.path, d.signedUrl]));
 }
+// P47: Home just shows the album button with a count
 async function fillHomePhotos() {
-  const { data } = await db.from("photos").select("id,path,caption,taken_on,show_on_board,uploaded_by,created_at,purpose").eq("purpose", "family").order("created_at", { ascending: false }).limit(6);
-  const rows = data || [];
+  const { count, data } = await db.from("photos").select("created_at", { count: "exact" }).eq("purpose", "family").order("created_at", { ascending: false }).limit(1);
   const el = $("homePhotos");
   if (!el) return;
-  if (!rows.length) { el.innerHTML = `<div class="card sub center" style="grid-column:1/-1;padding:22px 16px">No photos yet. Tap + Add to share some — they'll rotate on the TV too.</div>`; return; }
-  const urls = await signPhotos(rows);
-  photoRows = rows.map((r) => ({ ...r, url: urls[r.path] }));
-  el.innerHTML = photoRows.map((r) => `<button class="ph" data-ph="${r.id}" style="background-image:url('${esc(r.url ?? "")}')" aria-label="${esc(r.caption ?? "Photo")}"></button>`).join("");
+  el.textContent = count ? `${count} family photo${count === 1 ? "" : "s"} · newest ${agoText(data?.[0]?.created_at)}` : "No photos yet - tap + Add";
 }
 async function openAllPhotos() {
   $("tab-board").innerHTML = `<h2 class="row" style="justify-content:space-between">Family photos <a href="#" data-addph="family" class="hlink">+ Add</a></h2><div id="allPhotos" class="phgrid"><div class="sub">Loading…</div></div>
@@ -508,7 +519,7 @@ photoPicker.addEventListener("change", async () => {
   const files = [...(photoPicker.files || [])];
   photoPicker.value = "";
   if (!files.length) return;
-  const status = (t) => { const el = $("homePhotos") || $("allPhotos"); if (el) el.innerHTML = `<div class="sub" style="grid-column:1/-1">${esc(t)}</div>`; };
+  const status = (t) => { const el = $("allPhotos") || $("homePhotos"); if (el) el.innerHTML = el.id === "homePhotos" ? esc(t) : `<div class="sub" style="grid-column:1/-1">${esc(t)}</div>`; };
   let done = 0, failed = 0;
   for (const f of files) {
     status(`Uploading ${done + failed + 1} of ${files.length}…`);
@@ -1147,20 +1158,18 @@ function paintLinks() {
 const VIS = { owner: "Only the owner", admin: "Owner + admin", everyone: "Everyone" };
 const acctLabel = (a) => [a.org_name, a.name].filter(Boolean).join(" · ") || "Account";
 async function fillBankBox() {
-  const el = $("bankBox");
-  if (!el) return;
+  const el = $("bankBox") || document.createElement("div");   // P47: the old list lower down is gone
   const { data } = await db.from("bank_accounts").select("id,org_name,name,balance,available,balance_date,owner_id,co_owner_id").eq("hidden", false).order("org_name");
   if (!data?.length) return;
   // P44: a strip near the top so the bank is easy to find
   const strip = $("bankStrip");
   if (strip) {
     const total = data.reduce((t, a) => t + Number(a.balance || 0), 0);
-    strip.innerHTML = `<div class="card row" style="padding:10px 14px;margin-top:10px">
-      <div class="grow"><div class="sub" style="margin:0">Bank · ${data.length} account${data.length === 1 ? "" : "s"}</div><div style="font-size:20px;font-weight:700">${money(total)}</div></div>
-      <button class="chip" id="bsAccts" style="border:0;min-height:38px;margin-right:8px">Accounts ›</button>
+    strip.innerHTML = `<div class="card row" id="bsAccts" style="padding:10px 14px;margin-top:10px;cursor:pointer">
+      <div class="grow"><div class="sub" style="margin:0">Bank · ${data.length} account${data.length === 1 ? "" : "s"} · tap to see them</div><div style="font-size:20px;font-weight:700">${money(total)}</div></div>
       <button class="chip" id="bsSpend" style="border:0;min-height:38px">Spending ›</button></div>`;
-    $("bsAccts").addEventListener("click", () => openBankList(data));
-    $("bsSpend").addEventListener("click", () => openSpending(0));
+    $("bsAccts").addEventListener("click", (e) => { if (!e.target.closest("#bsSpend")) openBankList(data); });
+    $("bsSpend").addEventListener("click", (e) => { e.stopPropagation(); openSpending(0); });
   }
   el.innerHTML = `<h2 class="row" style="justify-content:space-between">Bank balances <a href="#" data-spend="1" class="hlink">Spending ›</a></h2>` + data.map((a) => `<div class="card row" data-acct="${esc(a.id)}" style="cursor:pointer">
       <div class="grow"><div class="name">${esc(acctLabel(a))}</div>
@@ -1723,7 +1732,7 @@ async function loadBills() {
   const lateE = entries.filter((e) => e.late), nowE = entries.filter((e) => !e.late);
   if (lateE.length) html += `<h2 class="late">Past due</h2>` + lateE.map((e) => e.html()).join("") + `<h2>This month &amp; coming up</h2>`;
   html += nowE.length ? nowE.map((e) => e.html()).join("") : `<div class="card sub">No household bills this month yet.</div>`;
-  if (canManage()) html += `<p class="sub center">Tap a bill to edit it.</p>`;
+  html += `<p class="sub center">Tap a bill for details · double-tap to open it.</p>`;
 
   // ---- my own bills (P11) ----
   const myRows = (mine.data || []).filter(prOk);
