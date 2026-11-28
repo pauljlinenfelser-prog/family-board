@@ -399,7 +399,7 @@ async function signPhotos(rows) {
   return Object.fromEntries((data || []).filter((d) => d.signedUrl).map((d) => [d.path, d.signedUrl]));
 }
 async function fillHomePhotos() {
-  const { data } = await db.from("photos").select("id,path,caption,taken_on,show_on_board,uploaded_by,created_at").order("created_at", { ascending: false }).limit(6);
+  const { data } = await db.from("photos").select("id,path,caption,taken_on,show_on_board,uploaded_by,created_at,purpose").eq("purpose", "family").order("created_at", { ascending: false }).limit(6);
   const rows = data || [];
   const el = $("homePhotos");
   if (!el) return;
@@ -409,16 +409,20 @@ async function fillHomePhotos() {
   el.innerHTML = photoRows.map((r) => `<button class="ph" data-ph="${r.id}" style="background-image:url('${esc(r.url ?? "")}')" aria-label="${esc(r.caption ?? "Photo")}"></button>`).join("");
 }
 async function openAllPhotos() {
-  $("tab-board").innerHTML = `<h2 class="row" style="justify-content:space-between">Family photos <a href="#" data-addph="1" class="hlink">+ Add</a></h2><div id="allPhotos" class="phgrid"><div class="sub">Loading…</div></div><button class="btn ghost" data-back="1">Back</button>`;
+  $("tab-board").innerHTML = `<h2 class="row" style="justify-content:space-between">Family photos <a href="#" data-addph="family" class="hlink">+ Add</a></h2><div id="allPhotos" class="phgrid"><div class="sub">Loading…</div></div>
+    <h2 class="row" style="justify-content:space-between">TV backgrounds <a href="#" data-addph="background" class="hlink">+ Add</a></h2>
+    <div class="sub" style="margin-top:-4px">Pictures to use behind the TV board. They don't rotate with the family photos. On the TV: ✱ > Background.</div>
+    <div id="bgPhotos" class="phgrid" style="margin-top:8px"></div><button class="btn ghost" data-back="1">Back</button>`;
   window.scrollTo(0, 0);
   $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
-  const { data } = await db.from("photos").select("id,path,caption,taken_on,show_on_board,uploaded_by,created_at").order("created_at", { ascending: false }).limit(300);
+  const { data } = await db.from("photos").select("id,path,caption,taken_on,show_on_board,uploaded_by,created_at,purpose").order("created_at", { ascending: false }).limit(300);
   const rows = data || [];
   const urls = await signPhotos(rows);
   photoRows = rows.map((r) => ({ ...r, url: urls[r.path] }));
-  $("allPhotos").innerHTML = photoRows.length
-    ? photoRows.map((r) => `<button class="ph" data-ph="${r.id}" style="background-image:url('${esc(r.url ?? "")}')">${r.show_on_board ? "" : `<span class="phtag">Not on TV</span>`}</button>`).join("")
-    : `<div class="card sub center" style="grid-column:1/-1">No photos yet.</div>`;
+  const tile = (r) => `<button class="ph" data-ph="${r.id}" style="background-image:url('${esc(r.url ?? "")}')">${r.show_on_board ? "" : `<span class="phtag">Not on TV</span>`}</button>`;
+  const fam = photoRows.filter((r) => r.purpose !== "background"), bgs = photoRows.filter((r) => r.purpose === "background");
+  $("allPhotos").innerHTML = fam.length ? fam.map(tile).join("") : `<div class="card sub center" style="grid-column:1/-1">No photos yet.</div>`;
+  $("bgPhotos").innerHTML = bgs.length ? bgs.map(tile).join("") : `<div class="card sub center" style="grid-column:1/-1">No backgrounds yet. Any family photo can be a background too.</div>`;
 }
 function openPhoto(r) {
   const mineOrAdmin = r.uploaded_by === me.id || member?.role === "admin";
@@ -428,6 +432,8 @@ function openPhoto(r) {
   if (mineOrAdmin) {
     h += `<label for="phCap">Caption</label><input id="phCap" maxlength="80" value="${esc(r.caption ?? "")}" placeholder="Lake trip, Brock's first deer…">
       <div class="check"><input type="checkbox" id="phTv" ${r.show_on_board ? "checked" : ""}><label for="phTv" style="margin:0;color:var(--text)">Show on the TV</label></div>
+      <label for="phUse">Use it as</label>
+      <select id="phUse"><option value="family" ${r.purpose !== "background" ? "selected" : ""}>Family photo (rotates on the TV)</option><option value="background" ${r.purpose === "background" ? "selected" : ""}>TV background only</option></select>
       <button class="btn" id="phSave">Save</button>
       <button class="btn ghost" id="phDel" style="color:var(--red)">Delete photo</button>`;
   }
@@ -435,7 +441,7 @@ function openPhoto(r) {
   $("tab-board").innerHTML = h;
   window.scrollTo(0, 0);
   $("phSave")?.addEventListener("click", async () => {
-    const { error } = await db.from("photos").update({ caption: $("phCap").value.trim() || null, show_on_board: $("phTv").checked }).eq("id", r.id);
+    const { error } = await db.from("photos").update({ caption: $("phCap").value.trim() || null, show_on_board: $("phTv").checked, purpose: $("phUse").value }).eq("id", r.id);
     if (error) return ($("phErr").textContent = "Couldn't save: " + error.message);
     openAllPhotos();
   });
@@ -463,6 +469,7 @@ function scaledJpeg(file, max = 1920) {
     img.src = URL.createObjectURL(file);
   });
 }
+let pickPurpose = "family";
 const photoPicker = Object.assign(document.createElement("input"), { type: "file", accept: "image/*", multiple: true });
 photoPicker.style.display = "none";
 document.body.appendChild(photoPicker);
@@ -479,7 +486,7 @@ photoPicker.addEventListener("change", async () => {
       const path = `${me.id}/photos/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
       const up = await db.storage.from("family-photos").upload(path, blob, { contentType: "image/jpeg" });
       if (up.error) throw up.error;
-      const { error } = await db.from("photos").insert({ path, uploaded_by: me.id, taken_on: f.lastModified ? localISO(new Date(f.lastModified)) : null });
+      const { error } = await db.from("photos").insert({ path, uploaded_by: me.id, purpose: pickPurpose, taken_on: f.lastModified ? localISO(new Date(f.lastModified)) : null });
       if (error) { await db.storage.from("family-photos").remove([path]); throw error; }
       done++;
     } catch { failed++; }
@@ -841,7 +848,7 @@ $("tab-board").addEventListener("click", async (e) => {
   const helpRow = e.target.closest("[data-help]");
   if (helpRow) { const b = helpBills.find((x) => x.id === helpRow.dataset.help); if (b) openHelp(b); return; }
   if (e.target.closest("[data-addev]")) { e.preventDefault(); return openEvent({}); }
-  if (e.target.closest("[data-addph]")) { e.preventDefault(); return photoPicker.click(); }
+  if (e.target.closest("[data-addph]")) { e.preventDefault(); pickPurpose = e.target.closest("[data-addph]").dataset.addph === "background" ? "background" : "family"; return photoPicker.click(); }
   if (e.target.closest("[data-allph]")) { e.preventDefault(); return openAllPhotos(); }
   const phBtn = e.target.closest("[data-ph]");
   if (phBtn) { const r = photoRows.find((x) => x.id === phBtn.dataset.ph); if (r) openPhoto(r); return; }
