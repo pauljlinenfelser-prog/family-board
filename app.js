@@ -61,6 +61,7 @@ async function start(user) {
   fillProfile();
   paintPush().catch(() => {});
   paintCal().catch(() => {});
+  paintBank().catch(() => {});
   paintLinks();
   $("meEmail").textContent = user.email;
   $("meRole").textContent = member?.role === "admin" ? "Admin" : member?.bill_manager ? "Bill manager" : "Family member";
@@ -173,6 +174,7 @@ async function loadBoard() {
     html += `<div class="card center" style="padding:26px 16px"><div class="big" style="font-size:22px">All paid up ✓</div><div class="sub">Nothing due in the next 30 days.</div></div>`;
   }
   const paidItems = items.filter((i) => i.paid && !keepForBill(i));
+  html += `<div id="bankBox"></div>`;
   if (paidItems.length) html += `<details class="paidlist"><summary class="sub">Paid in the last 30 days (${paidItems.length})</summary>${paidItems.map(itemRow).join("")}</details>`;
 
   if (waiting.length) {
@@ -205,6 +207,7 @@ async function loadBoard() {
   boardItems = items;
   walletFront = null;
   fillHomePhotos();
+  fillBankBox().catch(() => {});
 }
 
 // ---- wallet cards (P12) ----
@@ -1136,6 +1139,91 @@ function paintLinks() {
     paintLinks();
   }));
 }
+
+// ---------- bank balances + transactions (P36, SimpleFIN, view only) ----------
+const VIS = { owner: "Only the owner", admin: "Owner + admin", everyone: "Everyone" };
+const acctLabel = (a) => [a.org_name, a.name].filter(Boolean).join(" · ") || "Account";
+async function fillBankBox() {
+  const el = $("bankBox");
+  if (!el) return;
+  const { data } = await db.from("bank_accounts").select("id,org_name,name,balance,available,balance_date,owner_id").eq("hidden", false).order("org_name");
+  if (!data?.length) return;
+  el.innerHTML = `<h2>Bank balances</h2>` + data.map((a) => `<div class="card row" data-acct="${esc(a.id)}" style="cursor:pointer">
+      <div class="grow"><div class="name">${esc(acctLabel(a))}</div>
+      <div class="sub" style="margin:0">${a.owner_id && a.owner_id !== me.id ? esc(people[a.owner_id]?.display_name ?? "") + " · " : ""}${a.balance_date ? "as of " + esc(agoText(a.balance_date)) : ""}${a.available != null && a.available !== a.balance ? ` · available ${money(a.available)}` : ""}</div></div>
+      <div class="amt" style="${Number(a.balance) < 0 ? "color:var(--red)" : ""}">${money(a.balance)}</div></div>`).join("");
+  el.querySelectorAll("[data-acct]").forEach((r) => r.addEventListener("click", () => openBankAccount(data.find((a) => a.id === r.dataset.acct))));
+}
+async function openBankAccount(a) {
+  $("tab-board").innerHTML = `<h2>${esc(acctLabel(a))}</h2><div class="card"><div class="sub">Balance</div><div class="big">${money(a.balance)}</div>
+    ${a.available != null ? `<div class="sub">Available ${money(a.available)}</div>` : ""}</div><div id="txList" class="sub">Loading…</div><button class="btn ghost" data-back="1">Back</button>`;
+  window.scrollTo(0, 0);
+  $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+  const { data } = await db.from("bank_transactions").select("id,posted,amount,description,payee,pending").eq("account_id", a.id).order("posted", { ascending: false }).limit(150);
+  $("txList").innerHTML = (data || []).length ? data.map((t) => `<div class="card row" style="padding:10px 14px">
+      <div class="grow"><div style="font-weight:600">${esc(t.payee || t.description || "—")}</div>
+      <div class="sub" style="margin:0">${t.posted ? fmtDate(localISO(new Date(t.posted))) : ""}${t.pending ? " · pending" : ""}${t.payee && t.description && t.payee !== t.description ? " · " + esc(t.description) : ""}</div></div>
+      <div class="amt" style="color:${Number(t.amount) < 0 ? "var(--text)" : "var(--paid)"}">${Number(t.amount) > 0 ? "+" : ""}${money(t.amount)}</div></div>`).join("")
+    : `<div class="card sub">No transactions in the last few months.</div>`;
+}
+async function paintBank() {
+  const [{ data: links }, { data: accts }] = await Promise.all([
+    db.from("bank_links").select("id,last_sync,last_error,created_at"),
+    db.from("bank_accounts").select("id,link_id,org_name,name,balance,owner_id,visibility,hidden").order("org_name"),
+  ]);
+  const myLinks = links || [];
+  const mine = new Set(myLinks.map((l) => l.id));
+  $("bankSync").classList.toggle("hidden", !myLinks.length);
+  const last = myLinks.map((l) => l.last_sync).filter(Boolean).sort().pop();
+  const err = myLinks.map((l) => l.last_error).filter(Boolean)[0];
+  $("bankState").innerHTML = !myLinks.length
+    ? "Link your bank through SimpleFIN to see balances and transactions here (view only). You choose who else can see each account."
+    : `Linked ✓ · ${(accts || []).filter((a) => mine.has(a.link_id)).length} accounts${last ? " · checked " + esc(agoText(last)) : ""}. Checks every morning.` +
+      (err ? `<br><span style="color:var(--red)">${esc(err)}</span>` : "");
+  const fam = familyList();
+  const canEdit = (a) => a.owner_id === me.id || mine.has(a.link_id);
+  const editable = (accts || []).filter(canEdit);
+  $("bankAccts").innerHTML = editable.map((a) => `<div style="border-top:1px solid rgba(255,255,255,.08);margin-top:12px;padding-top:10px">
+      <div class="row"><div class="grow" style="font-weight:600">${esc(acctLabel(a))}</div><b>${money(a.balance)}</b></div>
+      <div class="split-row" style="grid-template-columns:1fr 1fr;margin-top:6px">
+        <select data-aown="${esc(a.id)}">${fam.map((p) => `<option value="${p.id}" ${p.id === a.owner_id ? "selected" : ""}>Owner: ${esc(p.display_name)}</option>`).join("")}</select>
+        <select data-avis="${esc(a.id)}">${Object.entries(VIS).map(([k, t]) => `<option value="${k}" ${k === a.visibility ? "selected" : ""}>${t}</option>`).join("")}</select>
+      </div>
+      <div class="check" style="margin-top:4px"><input type="checkbox" data-ahide="${esc(a.id)}" ${a.hidden ? "checked" : ""}><label style="margin:0;color:var(--text)">Hide on the Board</label></div></div>`).join("") +
+    myLinks.map((l) => `<button class="btn ghost" data-unbank="${l.id}" style="color:var(--red);margin-top:12px">Unlink this SimpleFIN connection</button>`).join("");
+  const save = async (id, fields) => {
+    const { error } = await db.from("bank_accounts").update(fields).eq("id", id);
+    $("bankErr").textContent = error ? "Couldn't save: " + error.message : "Saved ✓";
+    setTimeout(() => ($("bankErr").textContent = ""), 2500);
+  };
+  $("bankAccts").querySelectorAll("[data-aown]").forEach((x) => x.addEventListener("change", () => save(x.dataset.aown, { owner_id: x.value })));
+  $("bankAccts").querySelectorAll("[data-avis]").forEach((x) => x.addEventListener("change", () => save(x.dataset.avis, { visibility: x.value })));
+  $("bankAccts").querySelectorAll("[data-ahide]").forEach((x) => x.addEventListener("change", () => save(x.dataset.ahide, { hidden: x.checked })));
+  $("bankAccts").querySelectorAll("[data-unbank]").forEach((x) => x.addEventListener("click", async () => {
+    if (!confirm("Unlink this SimpleFIN connection? Its accounts and transactions come off the Family Board.")) return;
+    const { data, error } = await db.functions.invoke("notify", { body: { type: "bankunlink", link_id: x.dataset.unbank } });
+    $("bankErr").textContent = error || data?.error ? "Couldn't unlink: " + (data?.error || error.message) : "Unlinked.";
+    paintBank();
+  }));
+}
+$("bankLink").addEventListener("click", async () => {
+  const token = $("bankToken").value.trim();
+  if (token.length < 20) return ($("bankErr").textContent = "Paste the whole setup code from SimpleFIN.");
+  $("bankLink").disabled = true;
+  $("bankErr").textContent = "Linking… this can take up to a minute.";
+  const { data, error } = await db.functions.invoke("notify", { body: { type: "bankclaim", token } });
+  $("bankLink").disabled = false;
+  if (error || data?.error) return ($("bankErr").textContent = "Couldn't link: " + (data?.error || error.message));
+  $("bankToken").value = "";
+  $("bankErr").textContent = data?.error ? data.error : `Linked ✓ — ${data?.accounts ?? 0} accounts. Each one starts as "Only the owner"; change who can see it below.`;
+  paintBank();
+});
+$("bankSync").addEventListener("click", async () => {
+  $("bankErr").textContent = "Checking the bank…";
+  const { data, error } = await db.functions.invoke("notify", { body: { type: "banksync" } });
+  $("bankErr").textContent = error || data?.error ? "Couldn't check: " + (data?.error || error.message) : "Done ✓";
+  paintBank();
+});
 
 // ---------- profile (P2) ----------
 const COLORS = ["#7FA8F9", "#E57FA8", "#A98BF5", "#5DC26A", "#F0A04B", "#4FC1B0", "#F2C14E", "#FF8A80"];

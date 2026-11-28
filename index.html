@@ -281,6 +281,24 @@
       <button class="btn ghost hidden" id="calUnlink">Unlink my calendar</button>
       <div class="err" id="calErr"></div>
     </div>
+    <h2>My bank</h2>
+    <div class="card">
+      <div class="sub" id="bankState">Checking…</div>
+      <div id="bankForm">
+        <label for="bankToken">SimpleFIN setup code</label>
+        <textarea id="bankToken" rows="3" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="Paste the setup code here" style="width:100%"></textarea>
+        <details class="sub" style="margin-top:10px"><summary style="color:var(--accent);cursor:pointer">Where do I get a setup code?</summary>
+          <p>On a computer or phone browser go to <b>beta-bridge.simplefin.org</b>, sign in, make sure your banks are connected,
+          then choose <b>New app connection</b> (or "Apps" &gt; connect an app), name it "Family Board" and copy the <b>Setup Token</b>.
+          Paste it here. It only works once.</p>
+          <p>View only: the Family Board can read balances and transactions, never move money. The link is stored encrypted on the server.</p>
+        </details>
+        <button class="btn" id="bankLink">Link my bank</button>
+      </div>
+      <button class="btn ghost hidden" id="bankSync">Check for changes now</button>
+      <div id="bankAccts"></div>
+      <div class="err" id="bankErr"></div>
+    </div>
     <div id="linkBox" class="hidden">
       <h2>Shared money</h2>
       <div class="card">
@@ -292,7 +310,7 @@
     <h2>Account</h2>
     <div class="card"><div class="sub" id="meEmail"></div><div class="sub" id="meRole"></div></div>
     <button class="btn ghost" id="signOut">Sign out</button>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P35</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P36</p>
   </main>
 
   <div id="viewer" class="hidden"></div>
@@ -304,6 +322,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P35"></script>
+<script type="module" src="app.js?v=P36"></script>
 </body>
 </html>
