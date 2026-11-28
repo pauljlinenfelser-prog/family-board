@@ -1169,7 +1169,7 @@ async function openBankAccount(a) {
 async function paintBank() {
   const [{ data: links }, { data: accts }] = await Promise.all([
     db.from("bank_links").select("id,last_sync,last_error,created_at"),
-    db.from("bank_accounts").select("id,link_id,org_name,name,balance,owner_id,visibility,hidden").order("org_name"),
+    db.from("bank_accounts").select("id,link_id,org_name,name,balance,owner_id,visibility,hidden,show_on_tv").order("org_name"),
   ]);
   const myLinks = links || [];
   const mine = new Set(myLinks.map((l) => l.id));
@@ -1189,7 +1189,8 @@ async function paintBank() {
         <select data-aown="${esc(a.id)}">${fam.map((p) => `<option value="${p.id}" ${p.id === a.owner_id ? "selected" : ""}>Owner: ${esc(p.display_name)}</option>`).join("")}</select>
         <select data-avis="${esc(a.id)}">${Object.entries(VIS).map(([k, t]) => `<option value="${k}" ${k === a.visibility ? "selected" : ""}>${t}</option>`).join("")}</select>
       </div>
-      <div class="check" style="margin-top:4px"><input type="checkbox" data-ahide="${esc(a.id)}" ${a.hidden ? "checked" : ""}><label style="margin:0;color:var(--text)">Hide on the Board</label></div></div>`).join("") +
+      <div class="check" style="margin-top:4px"><input type="checkbox" data-ahide="${esc(a.id)}" ${a.hidden ? "checked" : ""}><label style="margin:0;color:var(--text)">Hide on the Board</label></div>
+      <div class="check" style="margin-top:2px"><input type="checkbox" data-atv="${esc(a.id)}" ${a.show_on_tv ? "checked" : ""}><label style="margin:0;color:var(--text)">Show on the TV${a.visibility === "everyone" ? "" : " (only works when shared with Everyone)"}</label></div></div>`).join("") +
     myLinks.map((l) => `<button class="btn ghost" data-unbank="${l.id}" style="color:var(--red);margin-top:12px">Unlink this SimpleFIN connection</button>`).join("");
   const save = async (id, fields) => {
     const { error } = await db.from("bank_accounts").update(fields).eq("id", id);
@@ -1199,6 +1200,9 @@ async function paintBank() {
   $("bankAccts").querySelectorAll("[data-aown]").forEach((x) => x.addEventListener("change", () => save(x.dataset.aown, { owner_id: x.value })));
   $("bankAccts").querySelectorAll("[data-avis]").forEach((x) => x.addEventListener("change", () => save(x.dataset.avis, { visibility: x.value })));
   $("bankAccts").querySelectorAll("[data-ahide]").forEach((x) => x.addEventListener("change", () => save(x.dataset.ahide, { hidden: x.checked })));
+  $("bankAccts").querySelectorAll("[data-atv]").forEach((x) => x.addEventListener("change", () => save(x.dataset.atv, { show_on_tv: x.checked })));
+  // P37: the TV note under "who can see it" changes when sharing changes
+  $("bankAccts").querySelectorAll("[data-avis]").forEach((x) => x.addEventListener("change", () => setTimeout(paintBank, 400)));
   $("bankAccts").querySelectorAll("[data-unbank]").forEach((x) => x.addEventListener("click", async () => {
     if (!confirm("Unlink this SimpleFIN connection? Its accounts and transactions come off the Family Board.")) return;
     const { data, error } = await db.functions.invoke("notify", { body: { type: "bankunlink", link_id: x.dataset.unbank } });
