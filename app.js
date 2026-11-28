@@ -1149,11 +1149,12 @@ async function fillBankBox() {
   if (!el) return;
   const { data } = await db.from("bank_accounts").select("id,org_name,name,balance,available,balance_date,owner_id,co_owner_id").eq("hidden", false).order("org_name");
   if (!data?.length) return;
-  el.innerHTML = `<h2>Bank balances</h2>` + data.map((a) => `<div class="card row" data-acct="${esc(a.id)}" style="cursor:pointer">
+  el.innerHTML = `<h2 class="row" style="justify-content:space-between">Bank balances <a href="#" data-spend="1" class="hlink">Spending ›</a></h2>` + data.map((a) => `<div class="card row" data-acct="${esc(a.id)}" style="cursor:pointer">
       <div class="grow"><div class="name">${esc(acctLabel(a))}</div>
       <div class="sub" style="margin:0">${a.co_owner_id ? esc([people[a.owner_id]?.display_name, people[a.co_owner_id]?.display_name].filter(Boolean).join(" & ")) + " · joint · " : a.owner_id && a.owner_id !== me.id ? esc(people[a.owner_id]?.display_name ?? "") + " · " : ""}${a.balance_date ? "as of " + esc(agoText(a.balance_date)) : ""}${a.available != null && a.available !== a.balance ? ` · available ${money(a.available)}` : ""}</div></div>
       <div class="amt" style="${Number(a.balance) < 0 ? "color:var(--red)" : ""}">${money(a.balance)}</div></div>`).join("");
   el.querySelectorAll("[data-acct]").forEach((r) => r.addEventListener("click", () => openBankAccount(data.find((a) => a.id === r.dataset.acct))));
+  el.querySelector("[data-spend]")?.addEventListener("click", (e) => { e.preventDefault(); openSpending(0); });
 }
 // P39/P40: "From your bank" - a bill that came out, or money that came in for someone's share.
 // Cash App doesn't say who sent it, so one payment can fit several shares: the phone asks whose it is.
@@ -1244,6 +1245,159 @@ async function fillBankSuggestions() {
     for (const id of b.dataset.sugno.split(",")) await db.rpc("bank_match_answer", { p_match: id, p_yes: false });
     loadBoard();
   }));
+}
+
+// ---------- spending totals (P43): this month / last month by category, search, budgets ----------
+const SPEND_CATS = [
+  ["Groceries", /\b(meijer|kroger|aldi|family fare|spartan|save a lot|gordon food|walmart grocery|sam'?s club|sam s club|costco|food ?lion|grocery|supermarket|iga|d ?w fresh|harding|witbeck)/],
+  ["Gas", /\b(shell|speedway|marathon|bp|mobil|citgo|sunoco|exxon|circle k|admiral|clark|valero|fuel|gas|gas station|holiday|ez ?mar|food mart|kwik|quick ?stop)\b/],
+  ["Eating out", /(\b(mcdonald|wendy|taco bell|burger|subway|domino|little caesar|starbucks|tim horton|kfc|culver|applebee|restaurant|grill|cafe|doordash|grubhub|uber ?eats|arby|dairy queen|sonic|chick fil|panera|biggby|dunkin|jimmy john|olive garden|buffalo wild|five guys|qdoba|chipotle|tavern|diner|pub)|pizza)/],
+  ["Apps & software", /\b(anthropic|openai|chatgpt|google play|google one|apple ?com|itunes|microsoft|adobe|elevenlabs|spectora|dropbox|icloud|canva|zoom|quickbooks|intuit)/],
+  ["Shopping", /\b(amazon|target|walmart|ebay|etsy|menards|lowe|home depot|tractor supply|dollar general|dollar tree|family dollar|best buy|kohl|tj maxx|marshalls|hobby lobby|joann|harbor freight|hardware|farm ?& ?home|family farm|shein|temu)/],
+  ["Health & personal", /\b(cvs|walgreens|rite aid|pharmacy|doctor|dental|dentist|hospital|clinic|optical|vision|urgent care|medical|hair|salon|barber|nail|spa)\b/],
+  ["Car", /\b(autozone|o ?reilly|advance auto|napa|jiffy|oil change|tire|car wash|auto parts|auto|repair|dmv|secretary of state)\b/],
+  ["Entertainment", /\b(netflix|spotify|hulu|disney|steam|playstation|xbox|nintendo|movie|theater|cinema|youtube|paramount|peacock|audible|kindle)/],
+];
+const SPEND_ORDER = ["Bills", "Subscriptions", "Groceries", "Gas", "Eating out", "Shopping", "Apps & software", "Health & personal", "Car", "Entertainment", "Other"];
+const SPEND_ALL = [...SPEND_ORDER, "Transfers & Cash App", "Not spending"];
+function merchantKey(t) {
+  const raw = String(t.payee || t.description || "").toLowerCase()
+    .replace(/\b(pos|ach|debit|purchase|card|visa|vis|recurring|payment|pmt|www|com|inc|llc|dbt|checkcard|sq|tst|web|id|ppd)\b/g, " ")
+    .replace(/[^a-z ]/g, " ").replace(/\s+/g, " ").trim();
+  return raw.split(" ").slice(0, 3).join(" ");
+}
+function spendCategory(t, ctx) {
+  const key = merchantKey(t);
+  if (ctx.rules[key]) return ctx.rules[key];
+  const txt = (String(t.payee || "") + " " + String(t.description || "")).toLowerCase();
+  if (Number(t.amount) > 0) return "Money in";
+  if (txt.trim() === "cash" || /(p2p|transfer|xfer|cash app|zelle|\bzel |venmo|atm |withdrawal|paypal transfer|cash out|nonpin)/.test(txt)) return "Transfers & Cash App";
+  const flat = key.replace(/ /g, "");
+  if (ctx.billKeys.some((k) => flat.includes(k))) return "Bills";
+  if (ctx.subKeys.has(key)) return "Subscriptions";
+  for (const [cat, re] of SPEND_CATS) if (re.test(txt)) return cat;
+  return "Other";
+}
+let spendState = { month: 0, open: null, q: "" };
+async function openSpending(month) {
+  spendState = { month: month ?? 0, open: null, q: "" };
+  $("tab-board").innerHTML = `<h2>Spending</h2><div class="sub">Loading…</div>`;
+  window.scrollTo(0, 0);
+  const now = new Date();
+  const from = localISO(new Date(now.getFullYear(), now.getMonth() - 3, 1));
+  const [{ data: accts }, { data: txs }, { data: bills }, { data: rec }, { data: rules }, { data: budgets }] = await Promise.all([
+    db.from("bank_accounts").select("id,name,org_name,hidden"),
+    db.from("bank_transactions").select("account_id,id,posted,amount,description,payee,pending").gte("posted", from).order("posted", { ascending: false }).limit(3000),
+    db.from("bills").select("name,website"),
+    db.from("bank_recurring").select("merchant,status,known_bill"),
+    db.from("bank_categories").select("merchant,category"),
+    db.from("bank_budgets").select("category,amount"),
+  ]);
+  const ok = new Set((accts || []).filter((a) => !a.hidden && !/(bitcoin|stock|invest|crypto)/i.test(`${a.name || ""}`)).map((a) => a.id));
+  const word = (x) => String(x || "").toLowerCase().replace(/[^a-z ]/g, "").split(" ")[0] || "";
+  const site = (w) => String(w || "").toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, "").split(".")[0] || "";
+  const billKeys = [...new Set((bills || []).flatMap((b) => [word(b.name), site(b.website)]).filter((k) => k.length >= 4))];
+  spendState.ctx = {
+    rules: Object.fromEntries((rules || []).map((r) => [r.merchant, r.category])),
+    billKeys,
+    subKeys: new Set((rec || []).filter((r) => r.status !== "ignored" && !r.known_bill).map((r) => r.merchant)),
+  };
+  spendState.budgets = Object.fromEntries((budgets || []).map((b) => [b.category, Number(b.amount)]));
+  spendState.txs = (txs || []).filter((t) => ok.has(t.account_id));
+  drawSpending();
+}
+function drawSpending() {
+  const st = spendState, ctx = st.ctx;
+  const now = new Date();
+  const mStart = new Date(now.getFullYear(), now.getMonth() - st.month, 1);
+  const mEnd = new Date(now.getFullYear(), now.getMonth() - st.month + 1, 1);
+  const label = mStart.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+  const inMonth = st.txs.filter((t) => { const d = new Date(t.posted); return d >= mStart && d < mEnd; });
+  const by = {};
+  for (const t of inMonth) {
+    const c = spendCategory(t, ctx);
+    (by[c] ??= { total: 0, list: [] });
+    by[c].total += c === "Money in" ? Number(t.amount) : -Number(t.amount);
+    by[c].list.push(t);
+  }
+  const spentCats = SPEND_ORDER.filter((c) => by[c] || st.budgets[c] !== undefined);
+  const spent = SPEND_ORDER.reduce((tot, c) => tot + (by[c]?.total || 0), 0);
+  const max = Math.max(1, ...spentCats.map((c) => by[c]?.total || 0));
+  const txRow = (t) => {
+    const key = merchantKey(t);
+    return `<div class="row" style="padding:6px 0;border-top:1px solid rgba(255,255,255,.06)">
+      <div class="grow"><div style="font-weight:600">${esc(t.payee || t.description || "—")}</div>
+      <div class="sub" style="margin:0">${t.posted ? fmtDate(localISO(new Date(t.posted))) : ""}${t.pending ? " · pending" : ""} ·
+        <select data-recat="${esc(key)}" style="width:auto;display:inline-block;padding:2px 6px;min-height:0;font-size:12px">${SPEND_ALL.map((c) => `<option ${c === spendCategory(t, ctx) ? "selected" : ""}>${c}</option>`).join("")}</select></div></div>
+      <div class="amt" style="${Number(t.amount) > 0 ? "color:var(--paid)" : ""}">${Number(t.amount) > 0 ? "+" : ""}${money(t.amount)}</div></div>`;
+  };
+  let h = `<h2 class="row" style="justify-content:space-between">Spending <span>
+      <a href="#" data-mon="1" class="hlink" style="margin-right:14px;${st.month === 1 ? "font-weight:700" : ""}">Last month</a>
+      <a href="#" data-mon="0" class="hlink" style="${st.month === 0 ? "font-weight:700" : ""}">This month</a></span></h2>
+    <div class="tiles"><div class="tile"><div class="sub">${esc(label)} spent</div><div class="tnum">${money(spent)}</div></div>
+      <div class="tile"><div class="sub">Money in</div><div class="tnum" style="color:var(--paid)">${money(by["Money in"]?.total || 0)}</div></div></div>
+    <input id="spendQ" placeholder="Search: Meijer, gas, Amazon…" value="${esc(st.q)}" autocomplete="off" style="margin:10px 0">
+    <div id="spendSearch"></div><div id="spendCats">`;
+  h += spentCats.map((c) => {
+    const tot = by[c]?.total || 0, bud = st.budgets[c];
+    const over = bud !== undefined && tot > bud;
+    return `<div class="card" style="padding:12px 14px;cursor:pointer" data-cat="${esc(c)}">
+      <div class="row"><div class="grow" style="font-weight:600">${esc(c)}</div><b style="${over ? "color:var(--red)" : ""}">${money(tot)}</b></div>
+      <div style="height:6px;border-radius:3px;background:rgba(255,255,255,.08);margin-top:6px"><div style="height:6px;border-radius:3px;width:${Math.min(100, Math.round((bud ? tot / Math.max(bud, 1) : tot / max) * 100))}%;background:${over ? "var(--red)" : "var(--accent)"}"></div></div>
+      <div class="sub" style="margin:4px 0 0">${by[c]?.list.length || 0} charges${bud !== undefined ? ` · budget ${money(bud)}${over ? ` · over by ${money(tot - bud)}` : ` · ${money(bud - tot)} left`}` : ""}
+        · <a href="#" data-bud="${esc(c)}" class="hlink">${bud !== undefined ? "change budget" : "set a budget"}</a></div>
+      ${st.open === c ? `<div style="margin-top:8px">${(by[c]?.list || []).map(txRow).join("") || `<div class="sub">Nothing yet this month.</div>`}</div>` : ""}</div>`;
+  }).join("");
+  const other = ["Transfers & Cash App", "Money in", "Not spending"].filter((c) => by[c]);
+  if (other.length) h += `<div class="sub" style="margin-top:12px">Not counted as spending: ` + other.map((c) => `<a href="#" data-cat="${esc(c)}" class="hlink">${esc(c)} ${money(by[c].total)}</a>`).join(" · ") + `</div>` +
+    (other.includes(st.open) ? `<div class="card">${by[st.open].list.map(txRow).join("")}</div>` : "");
+  h += `</div><div class="sub" style="margin-top:12px">Sorted by store name. Wrong? Open a category and change the store's category - it remembers.</div>
+    <button class="btn ghost" data-back="1">Back</button><div class="err" id="spendErr"></div>`;
+  $("tab-board").innerHTML = h;
+  const tb = $("tab-board");
+  tb.querySelector("[data-back]").addEventListener("click", loadBoard);
+  tb.querySelectorAll("[data-mon]").forEach((a) => a.addEventListener("click", (e) => { e.preventDefault(); st.month = Number(a.dataset.mon); st.open = null; drawSpending(); }));
+  tb.querySelectorAll("[data-cat]").forEach((el) => el.addEventListener("click", (e) => {
+    if (e.target.closest("select,[data-bud],a.hlink:not([data-cat])")) return;
+    e.preventDefault();
+    st.open = st.open === el.dataset.cat ? null : el.dataset.cat;
+    drawSpending();
+  }));
+  tb.querySelectorAll("[data-bud]").forEach((a) => a.addEventListener("click", async (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const cur = st.budgets[a.dataset.bud];
+    const v = prompt(`Monthly budget for ${a.dataset.bud} (leave empty to remove):`, cur !== undefined ? String(cur) : "");
+    if (v === null) return;
+    const n = parseFloat(String(v).replace(/[$,]/g, ""));
+    const { error } = v.trim() === "" || isNaN(n)
+      ? await db.from("bank_budgets").delete().eq("member_id", me.id).eq("category", a.dataset.bud)
+      : await db.from("bank_budgets").upsert({ member_id: me.id, category: a.dataset.bud, amount: Math.round(n * 100) / 100 }, { onConflict: "member_id,category" });
+    if (error) return ($("spendErr").textContent = "Couldn't save: " + error.message);
+    if (v.trim() === "" || isNaN(n)) delete st.budgets[a.dataset.bud]; else st.budgets[a.dataset.bud] = Math.round(n * 100) / 100;
+    drawSpending();
+  }));
+  tb.querySelectorAll("[data-recat]").forEach((sel) => {
+    sel.addEventListener("click", (e) => e.stopPropagation());
+    sel.addEventListener("change", async (e) => {
+      e.stopPropagation();
+      const { error } = await db.from("bank_categories").upsert({ member_id: me.id, merchant: sel.dataset.recat, category: sel.value, updated_at: new Date().toISOString() }, { onConflict: "member_id,merchant" });
+      if (error) return ($("spendErr").textContent = "Couldn't save: " + error.message);
+      st.ctx.rules[sel.dataset.recat] = sel.value;
+      drawSpending();
+    });
+  });
+  const runSearch = () => {
+    const q = $("spendQ").value.trim().toLowerCase();
+    st.q = $("spendQ").value;
+    if (q.length < 2) return ($("spendSearch").innerHTML = "");
+    const hits = st.txs.filter((t) => (String(t.payee || "") + " " + String(t.description || "") + " " + spendCategory(t, ctx)).toLowerCase().includes(q));
+    const monthHits = hits.filter((t) => { const d = new Date(t.posted); return d >= mStart && d < mEnd; });
+    const sum = (l) => l.reduce((tot, t) => tot - Number(t.amount), 0);
+    $("spendSearch").innerHTML = `<div class="card"><div style="font-weight:600">"${esc($("spendQ").value)}": ${money(sum(monthHits))} in ${esc(label)} · ${money(sum(hits))} in the last 3 months (${hits.length})</div>
+      ${hits.slice(0, 40).map(txRow).join("")}</div>`;
+  };
+  $("spendQ").addEventListener("input", runSearch);
+  if (st.q) runSearch();
 }
 async function openBankAccount(a) {
   $("tab-board").innerHTML = `<h2>${esc(acctLabel(a))}</h2><div class="card"><div class="sub">Balance</div><div class="big">${money(a.balance)}</div>
