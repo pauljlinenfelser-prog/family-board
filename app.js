@@ -58,6 +58,7 @@ async function start(user) {
   playWalletIntro();
   $("hello").textContent = `Hi, ${member?.display_name ?? "there"}`;
   $("today").textContent = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  paintBoardName().catch(() => {});
   await paintAvatar($("me"), member);
   fillProfile();
   paintPush().catch(() => {});
@@ -73,17 +74,57 @@ async function start(user) {
   loadNotes();
 }
 
-// ---------- P47: a wallet that opens when the app starts (once per opening) ----------
-function playWalletIntro() {
-  const el = $("intro");
-  if (!el || sessionStorage.getItem("fbIntro") || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-  sessionStorage.setItem("fbIntro", "1");
-  el.classList.remove("hidden");
-  setTimeout(() => el.classList.add("open"), 350);
-  setTimeout(() => el.classList.add("gone"), 1250);
-  setTimeout(() => el.classList.add("hidden"), 1750);
-  el.addEventListener("click", () => el.classList.add("hidden"), { once: true });
+// ---------- P49: the board's name (shown on the TVs and at the top here; the admin changes it) ----------
+async function paintBoardName() {
+  const { data } = await db.from("settings").select("value").eq("key", "board_name").maybeSingle();
+  const name = typeof data?.value === "string" && data.value.trim() ? data.value.trim() : "Raines Family Board";
+  document.title = name;
+  $("today").textContent = name + " · " + new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+  if ($("boardName")) $("boardName").value = name;
+  $("boardNameBox")?.classList.toggle("hidden", member?.role !== "admin");
 }
+$("boardNameSave").addEventListener("click", async () => {
+  const name = $("boardName").value.trim().slice(0, 40);
+  if (!name) return ($("boardNameErr").textContent = "Type a name first.");
+  const { error } = await db.from("settings").upsert({ key: "board_name", value: name }, { onConflict: "key" });
+  $("boardNameErr").textContent = error ? "Couldn't save: " + error.message : "Saved ✓ - the TVs show it at their next refresh (or press OK on a TV).";
+  if (!error) paintBoardName();
+});
+
+// ---------- P48: the wallet video when the app opens (once per opening) ----------
+// Phones only allow sound after a tap, so if it can't start with sound it waits on the first frame
+// with "Tap to open". Skip in the corner; Me > Settings > Opening animation turns it off.
+function playWalletIntro() {
+  const el = $("intro"), v = $("introVid");
+  if (!el || !v || localStorage.getItem("fbIntroOff") === "1" || sessionStorage.getItem("fbIntro")
+      || matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  sessionStorage.setItem("fbIntro", "1");
+  let finished = false;
+  const done = () => {
+    if (finished) return;
+    finished = true;
+    v.pause();
+    el.classList.add("gone");
+    setTimeout(() => { el.classList.add("hidden"); el.classList.remove("gone"); }, 500);
+  };
+  el.classList.remove("hidden");
+  if (!v.getAttribute("src")) { v.src = "intro.mp4"; v.preload = "auto"; v.load(); }  // only fetched when it plays
+  v.muted = false;
+  v.onended = done;
+  v.onerror = done;
+  $("introSkip").onclick = (e) => { e.stopPropagation(); done(); };
+  setTimeout(() => { if (v.paused && $("introTap").classList.contains("hidden")) done(); }, 15000);
+  v.play().catch(() => {
+    $("introTap").classList.remove("hidden");
+    el.onclick = () => {
+      el.onclick = null;
+      $("introTap").classList.add("hidden");
+      v.play().catch(done);
+    };
+  });
+}
+$("introOn").checked = localStorage.getItem("fbIntroOff") !== "1";
+$("introOn").addEventListener("change", () => localStorage.setItem("fbIntroOff", $("introOn").checked ? "0" : "1"));
 
 // ---------- first sign-in password (P4) ----------
 $("setpwForm").addEventListener("submit", async (e) => {

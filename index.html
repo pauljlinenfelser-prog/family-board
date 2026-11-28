@@ -21,16 +21,9 @@
   .drawer { background: var(--panel); border-radius: 16px; margin-bottom: 10px; }
   #intro { position: fixed; inset: 0; z-index: 99; background: var(--bg, #101216); display: flex; align-items: center; justify-content: center; transition: opacity .5s; }
   #intro.gone { opacity: 0; }
-  #intro .wl { position: relative; width: 190px; height: 130px; perspective: 600px; }
-  #intro .wl-body { position: absolute; inset: 0; border-radius: 16px; background: #6B4423; box-shadow: inset 0 0 0 3px #8A5A33; }
-  #intro .wl-card { position: absolute; left: 22px; width: 120px; height: 70px; border-radius: 8px; transition: transform .6s .35s; }
-  #intro .c1 { top: 18px; background: #378ADD; } #intro .c2 { top: 30px; left: 40px; background: #1D9E75; }
-  #intro .wl-cash { position: absolute; top: 10px; right: 18px; width: 70px; height: 40px; border-radius: 4px; background: #97C459; transition: transform .6s .3s; }
-  #intro .wl-flap { position: absolute; left: 0; right: 0; top: 0; height: 130px; border-radius: 16px; background: #7D5230; box-shadow: inset 0 0 0 3px #9A6A40; transform-origin: top; transition: transform .7s ease-in-out; }
-  #intro .wl-snap { position: absolute; right: -6px; top: 52px; width: 34px; height: 26px; border-radius: 6px; background: #C9A15A; }
-  #intro.open .wl-flap { transform: rotateX(165deg); }
-  #intro.open .wl-body { z-index: 2; }
-  #intro.open .c1 { transform: translateY(-46px); } #intro.open .c2 { transform: translateY(-30px); } #intro.open .wl-cash { transform: translateY(-34px); }
+  #intro video { width: 100%; height: 100%; object-fit: contain; background: #101216; }
+  #introTap { position: absolute; bottom: 14%; left: 50%; transform: translateX(-50%); background: rgba(0,0,0,.6); color: #fff; font-weight: 700; padding: 12px 26px; border-radius: 26px; font-size: 18px; }
+  #introSkip { position: absolute; top: 18px; right: 16px; background: rgba(0,0,0,.45); color: #fff; border: 0; border-radius: 18px; padding: 8px 16px; font-size: 14px; }
   .ptag { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 8px; margin-left: 8px; vertical-align: 2px; }
   .ptag.must { background: rgba(255,90,90,.18); color: #FF8A80; }
   .ptag.want { background: rgba(242,193,78,.18); color: #F2C14E; }
@@ -152,7 +145,9 @@
 
 <!-- app -->
 <div id="intro" class="hidden" aria-hidden="true">
-  <div class="wl"><div class="wl-body"><div class="wl-card c1"></div><div class="wl-card c2"></div><div class="wl-cash"></div></div><div class="wl-flap"><div class="wl-snap"></div></div></div>
+  <video id="introVid" playsinline preload="none"></video>
+  <div id="introTap" class="hidden">Tap to open</div>
+  <button type="button" id="introSkip">Skip</button>
 </div>
 <section id="app" class="hidden">
   <header>
@@ -305,6 +300,15 @@
       <button class="btn ghost hidden" id="pushTest">Send me a test</button>
       <button class="btn ghost hidden" id="pushOff">Turn off on this phone</button>
       <div class="err" id="pushErr"></div>
+        <div id="boardNameBox" class="hidden">
+          <h3>Board name</h3>
+          <input id="boardName" maxlength="40" placeholder="Raines Family Board">
+          <button class="btn" id="boardNameSave">Save the name</button>
+          <div class="sub" style="margin-top:4px">Shown at the top of every TV and here. Only the admin can change it.</div>
+          <div class="err" id="boardNameErr"></div>
+        </div>
+        <h3 style="margin-top:20px">Opening animation</h3>
+        <div class="check"><input type="checkbox" id="introOn"><label for="introOn" style="margin:0;color:var(--text)">Play the wallet opening (with sound) when the app opens</label></div>
         <h3 style="margin-top:20px">My phone calendar</h3>
       <div class="sub" id="calState">Checking…</div>
       <div id="calForm">
@@ -354,7 +358,7 @@
         </div>
       </div>
     </details>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P47</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P49</p>
   </main>
 
   <div id="viewer" class="hidden"></div>
@@ -366,6 +370,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P47"></script>
+<script type="module" src="app.js?v=P49"></script>
 </body>
 </html>

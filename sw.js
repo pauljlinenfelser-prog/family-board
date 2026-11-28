@@ -1,7 +1,7 @@
 // Family Board service worker: makes the app installable, loads the shell fast, and shows notifications.
 // Data always comes live from the database; only the app files are cached.
-const CACHE = "familyboard-P47";
-const SHELL = ["./", "index.html", "app.js?v=P47", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
+const CACHE = "familyboard-P49";
+const SHELL = ["./", "index.html", "app.js?v=P49", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" })))));
@@ -16,6 +16,7 @@ self.addEventListener("activate", (e) => {
 self.addEventListener("fetch", (e) => {
   const url = new URL(e.request.url);
   if (url.origin !== location.origin) return; // database + library calls go straight to the network
+  if (url.pathname.endsWith(".mp4")) return; // P48: the opening video streams straight from the site
   e.respondWith(fetch(e.request, { cache: "no-cache" }).then((r) => {
     const copy = r.clone();
     caches.open(CACHE).then((c) => c.put(e.request, copy));
