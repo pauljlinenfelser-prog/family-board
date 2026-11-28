@@ -205,7 +205,7 @@ function walletCard(i, k, step) {
   const logo = i.info.logo_url
     ? `<div class="wlogo" style="background-image:url('${esc(i.info.logo_url)}')"></div>`
     : `<div class="wlogo" style="background-color:${fg};color:${bg}">${esc(i.name.slice(0, 1).toUpperCase())}</div>`;
-  const sub = [i.kind === "household" ? "Household" : i.kind === "private" ? "🔒 Private" : "Personal", repeatLabel(i.info)].filter(Boolean).join(" · ");
+  const sub = [i.kind === "household" ? "Household" : i.kind === "private" ? "🔒 Private" : "Personal", repeatLabel(i.info), i.info?.autopay ? "Autopay" : ""].filter(Boolean).join(" · ");
   const pill = i.kind === "household" ? `Bill ${money(i.billAmount)}` : "Tap to mark paid";
   return `<div class="wcard" data-card="${key}" style="top:${k * step}px;z-index:${k + 1};background:${bg};color:${fg}">
     <div class="row">${logo}<div class="grow"><div class="name">${esc(i.name)}</div><div style="font-size:12px;color:${soft}">${esc(sub)}</div></div></div>
@@ -815,6 +815,8 @@ function openShare(i) {
   } else if (!i.confirmed) {
     h += `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — I haven't paid this yet</button>`;
   }
+  const seeAll = iAmPayee || canManage();
+  if (seeAll) h += `<div id="sharePeople" style="margin-top:14px"></div>`;
   h += payBox(i.info);
   h += viewBillButton(i.info, i.name);
   h += `<button class="btn ghost" data-back="1">Back</button><div class="err" id="shareErr"></div></div>`;
@@ -822,6 +824,31 @@ function openShare(i) {
   window.scrollTo(0, 0);
   $("tab-board").querySelectorAll("[data-pay]").forEach((b) => b.addEventListener("click", () => markShare(i, b.dataset.pay)));
   $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+  if (seeAll) paintSharePeople(i);
+}
+
+// P33: on the bill screen, whoever gets paid sees everyone's share (same lines as the Bills tab)
+async function paintSharePeople(i) {
+  const { data } = await db.from("bill_share_amounts").select("id,member_id,share_amount,paid,paid_method,confirmed").eq("bill_id", i.billId);
+  const el = $("sharePeople");
+  if (!el || !data) return;
+  const pay = payeeFor(i.info);
+  el.innerHTML = `<div class="sub" style="margin:0 0 4px">Everyone's share</div>` + data.filter((s) => people[s.member_id]).map((s) => {
+    const p = people[s.member_id];
+    const self = pay && p.id === pay.id;
+    let st;
+    if (s.paid && (s.confirmed || self)) st = `<span style="color:var(--paid)">${self ? "paid ✓" : `received ✓ · ${esc(methodLabel(s.paid_method, i.info))}`}</span>`;
+    else if (s.paid) st = `<span class="soon">says paid · ${esc(methodLabel(s.paid_method, i.info))}</span>` +
+      (canManage() ? ` <button type="button" class="chip" data-okpay="${s.id}" style="border:0;min-height:30px;margin-left:6px;color:var(--accent)">Confirm ✓</button>` : "");
+    else st = `<span class="sub" style="margin:0">not yet</span>`;
+    return `<div style="font-size:15px;margin-top:4px"><b style="color:${esc(p.color)}">${esc(p.display_name)}</b> ${money(s.share_amount)} — ${st}</div>`;
+  }).join("");
+  el.querySelectorAll("[data-okpay]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true; b.textContent = "Saving…";
+    const { error } = await db.from("bill_shares").update({ confirmed: true }).eq("id", b.dataset.okpay);
+    if (error) { b.disabled = false; b.textContent = "Couldn't save — try again"; return; }
+    paintSharePeople(i);
+  }));
 }
 
 async function markShare(i, how) {
@@ -1209,7 +1236,7 @@ async function loadBills() {
       ${logoTile(b)}
       <div class="grow"><div class="name">${esc(b.name)}</div>
       <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${repeatLabel(b) ? " · " + repeatLabel(b) : ""}</div>
-      <div class="sub">${who.length ? "Split: " + esc(who.join(", ")) + ` · ${(byBill[b.id] || []).filter((s) => s.paid).length} of ${who.length} paid` : "Not split yet"}</div>
+      <div class="sub">${!who.length ? "Not split yet" : canManage() ? `${(byBill[b.id] || []).filter((s) => s.paid).length} of ${who.length} paid` : "Split: " + esc(who.join(", ")) + ` · ${(byBill[b.id] || []).filter((s) => s.paid).length} of ${who.length} paid`}</div>
       ${canManage() ? receivedLines(b) : ""}</div>
       <div class="amt">${money(b.amount)}</div></div>`;
   };
