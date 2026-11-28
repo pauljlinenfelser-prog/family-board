@@ -1146,11 +1146,11 @@ const acctLabel = (a) => [a.org_name, a.name].filter(Boolean).join(" · ") || "A
 async function fillBankBox() {
   const el = $("bankBox");
   if (!el) return;
-  const { data } = await db.from("bank_accounts").select("id,org_name,name,balance,available,balance_date,owner_id").eq("hidden", false).order("org_name");
+  const { data } = await db.from("bank_accounts").select("id,org_name,name,balance,available,balance_date,owner_id,co_owner_id").eq("hidden", false).order("org_name");
   if (!data?.length) return;
   el.innerHTML = `<h2>Bank balances</h2>` + data.map((a) => `<div class="card row" data-acct="${esc(a.id)}" style="cursor:pointer">
       <div class="grow"><div class="name">${esc(acctLabel(a))}</div>
-      <div class="sub" style="margin:0">${a.owner_id && a.owner_id !== me.id ? esc(people[a.owner_id]?.display_name ?? "") + " · " : ""}${a.balance_date ? "as of " + esc(agoText(a.balance_date)) : ""}${a.available != null && a.available !== a.balance ? ` · available ${money(a.available)}` : ""}</div></div>
+      <div class="sub" style="margin:0">${a.co_owner_id ? esc([people[a.owner_id]?.display_name, people[a.co_owner_id]?.display_name].filter(Boolean).join(" & ")) + " · joint · " : a.owner_id && a.owner_id !== me.id ? esc(people[a.owner_id]?.display_name ?? "") + " · " : ""}${a.balance_date ? "as of " + esc(agoText(a.balance_date)) : ""}${a.available != null && a.available !== a.balance ? ` · available ${money(a.available)}` : ""}</div></div>
       <div class="amt" style="${Number(a.balance) < 0 ? "color:var(--red)" : ""}">${money(a.balance)}</div></div>`).join("");
   el.querySelectorAll("[data-acct]").forEach((r) => r.addEventListener("click", () => openBankAccount(data.find((a) => a.id === r.dataset.acct))));
 }
@@ -1169,7 +1169,7 @@ async function openBankAccount(a) {
 async function paintBank() {
   const [{ data: links }, { data: accts }] = await Promise.all([
     db.from("bank_links").select("id,last_sync,last_error,created_at"),
-    db.from("bank_accounts").select("id,link_id,org_name,name,balance,owner_id,visibility,hidden,show_on_tv").order("org_name"),
+    db.from("bank_accounts").select("id,link_id,org_name,name,balance,owner_id,co_owner_id,joint_asked,visibility,hidden,show_on_tv").order("org_name"),
   ]);
   const myLinks = links || [];
   const mine = new Set(myLinks.map((l) => l.id));
@@ -1181,14 +1181,24 @@ async function paintBank() {
     : `Linked ✓ · ${(accts || []).filter((a) => mine.has(a.link_id)).length} accounts${last ? " · checked " + esc(agoText(last)) : ""}. Checks every morning.` +
       (err ? `<br><span style="color:var(--red)">${esc(err)}</span>` : "");
   const fam = familyList();
-  const canEdit = (a) => a.owner_id === me.id || mine.has(a.link_id);
+  const canEdit = (a) => a.owner_id === me.id || a.co_owner_id === me.id || mine.has(a.link_id);
   const editable = (accts || []).filter(canEdit);
-  $("bankAccts").innerHTML = editable.map((a) => `<div style="border-top:1px solid rgba(255,255,255,.08);margin-top:12px;padding-top:10px">
+  // P38: people who share money (Me tab > Shared money) get asked once per account: is it joint?
+  const ask = editable.filter((a) => !a.joint_asked && !a.co_owner_id && people[a.owner_id]?.linked_with && people[people[a.owner_id].linked_with]);
+  const askHtml = ask.map((a) => {
+    const partner = people[people[a.owner_id].linked_with];
+    return `<div class="card" style="margin-top:12px;border:1px solid var(--accent)"><div style="font-weight:600">Is ${esc(acctLabel(a))} a joint account with ${esc(partner.display_name)}?</div>
+      <div class="sub" style="margin:4px 0 8px">Joint accounts show for both of you, on the phones and the TVs.</div>
+      <div class="row" style="gap:8px"><button class="btn" data-joint="${esc(a.id)}" data-partner="${partner.id}" style="margin:0">Yes, joint</button>
+      <button class="btn ghost" data-notjoint="${esc(a.id)}" style="margin:0">No, just ${esc(people[a.owner_id].display_name)}'s</button></div></div>`;
+  }).join("");
+  $("bankAccts").innerHTML = askHtml + editable.map((a) => `<div style="border-top:1px solid rgba(255,255,255,.08);margin-top:12px;padding-top:10px">
       <div class="row"><div class="grow" style="font-weight:600">${esc(acctLabel(a))}</div><b>${money(a.balance)}</b></div>
       <div class="split-row" style="grid-template-columns:1fr 1fr;margin-top:6px">
         <select data-aown="${esc(a.id)}">${fam.map((p) => `<option value="${p.id}" ${p.id === a.owner_id ? "selected" : ""}>Owner: ${esc(p.display_name)}</option>`).join("")}</select>
         <select data-avis="${esc(a.id)}">${Object.entries(VIS).map(([k, t]) => `<option value="${k}" ${k === a.visibility ? "selected" : ""}>${t}</option>`).join("")}</select>
       </div>
+      <select data-aco="${esc(a.id)}" style="margin-top:6px"><option value="">Not a joint account</option>${fam.filter((p) => p.id !== a.owner_id).map((p) => `<option value="${p.id}" ${p.id === a.co_owner_id ? "selected" : ""}>Joint with ${esc(p.display_name)}</option>`).join("")}</select>
       <div class="check" style="margin-top:4px"><input type="checkbox" data-ahide="${esc(a.id)}" ${a.hidden ? "checked" : ""}><label style="margin:0;color:var(--text)">Hide on the Board</label></div>
       <div class="check" style="margin-top:2px"><input type="checkbox" data-atv="${esc(a.id)}" ${a.show_on_tv ? "checked" : ""}><label style="margin:0;color:var(--text)">Show on the TV${a.visibility === "everyone" ? "" : " (only works when shared with Everyone)"}</label></div></div>`).join("") +
     myLinks.map((l) => `<button class="btn ghost" data-unbank="${l.id}" style="color:var(--red);margin-top:12px">Unlink this SimpleFIN connection</button>`).join("");
@@ -1201,6 +1211,9 @@ async function paintBank() {
   $("bankAccts").querySelectorAll("[data-avis]").forEach((x) => x.addEventListener("change", () => save(x.dataset.avis, { visibility: x.value })));
   $("bankAccts").querySelectorAll("[data-ahide]").forEach((x) => x.addEventListener("change", () => save(x.dataset.ahide, { hidden: x.checked })));
   $("bankAccts").querySelectorAll("[data-atv]").forEach((x) => x.addEventListener("change", () => save(x.dataset.atv, { show_on_tv: x.checked })));
+  $("bankAccts").querySelectorAll("[data-aco]").forEach((x) => x.addEventListener("change", async () => { await save(x.dataset.aco, { co_owner_id: x.value || null, joint_asked: true }); paintBank(); }));
+  $("bankAccts").querySelectorAll("[data-joint]").forEach((x) => x.addEventListener("click", async () => { await save(x.dataset.joint, { co_owner_id: x.dataset.partner, joint_asked: true }); paintBank(); }));
+  $("bankAccts").querySelectorAll("[data-notjoint]").forEach((x) => x.addEventListener("click", async () => { await save(x.dataset.notjoint, { joint_asked: true }); paintBank(); }));
   // P37: the TV note under "who can see it" changes when sharing changes
   $("bankAccts").querySelectorAll("[data-avis]").forEach((x) => x.addEventListener("change", () => setTimeout(paintBank, 400)));
   $("bankAccts").querySelectorAll("[data-unbank]").forEach((x) => x.addEventListener("click", async () => {
