@@ -156,7 +156,7 @@ async function loadBoard() {
   let html = `<div class="tiles">
       <div class="tile"><div class="sub">Left to pay · next 30 days</div><div class="tnum">${money(left)}</div></div>
       <div class="tile ${late ? "tile-late" : ""}"><div class="sub">${late ? "Past due" : "Past due"}</div><div class="tnum">${money(late)}</div></div>
-    </div>`;
+    </div><div id="bankSugs"></div>`;
 
   // ---- wallet: my unpaid bills as stacked cards, oldest first ----
   // P34: late + current copies of the same bill share one card (oldest first, total owed)
@@ -208,6 +208,7 @@ async function loadBoard() {
   walletFront = null;
   fillHomePhotos();
   fillBankBox().catch(() => {});
+  fillBankSuggestions().catch(() => {});
 }
 
 // ---- wallet cards (P12) ----
@@ -1153,6 +1154,48 @@ async function fillBankBox() {
       <div class="sub" style="margin:0">${a.co_owner_id ? esc([people[a.owner_id]?.display_name, people[a.co_owner_id]?.display_name].filter(Boolean).join(" & ")) + " · joint · " : a.owner_id && a.owner_id !== me.id ? esc(people[a.owner_id]?.display_name ?? "") + " · " : ""}${a.balance_date ? "as of " + esc(agoText(a.balance_date)) : ""}${a.available != null && a.available !== a.balance ? ` · available ${money(a.available)}` : ""}</div></div>
       <div class="amt" style="${Number(a.balance) < 0 ? "color:var(--red)" : ""}">${money(a.balance)}</div></div>`).join("");
   el.querySelectorAll("[data-acct]").forEach((r) => r.addEventListener("click", () => openBankAccount(data.find((a) => a.id === r.dataset.acct))));
+}
+// P39/P40: "From your bank" - a bill that came out, or money that came in for someone's share.
+// Cash App doesn't say who sent it, so one payment can fit several shares: the phone asks whose it is.
+// Nothing changes until a button is tapped.
+async function fillBankSuggestions() {
+  const el = $("bankSugs");
+  if (!el) return;
+  const { data } = await db.from("bank_matches").select("id,kind,title,detail,account_id,tx_id,posted").eq("status", "new").order("posted", { ascending: false }).limit(20);
+  if (!data?.length) return (el.innerHTML = "");
+  const groups = [];
+  const byTx = {};
+  for (const x of data) {
+    const key = x.kind + "|" + x.account_id + "|" + x.tx_id;
+    if (!byTx[key]) { byTx[key] = { kind: x.kind, detail: x.detail, items: [] }; groups.push(byTx[key]); }
+    byTx[key].items.push(x);
+  }
+  el.innerHTML = `<h2>From your bank</h2>` + groups.slice(0, 6).map((g) => {
+    if (g.kind === "bill_paid") {
+      const x = g.items[0];
+      return `<div class="card" style="border:1px solid var(--accent)"><div style="font-weight:600">${esc(x.title)} — mark it paid?</div>
+        <div class="sub" style="margin:4px 0 8px">${esc(x.detail || "")}</div>
+        <div class="row" style="gap:8px"><button class="btn" data-sug="${x.id}" data-yes="1" style="margin:0">Yes, mark it paid</button>
+        <button class="btn ghost" data-sugno="${g.items.map((y) => y.id).join(",")}" style="margin:0">No, not this</button></div></div>`;
+    }
+    const one = g.items.length === 1;
+    return `<div class="card" style="border:1px solid var(--accent)">
+      <div style="font-weight:600">${one ? esc(g.items[0].title) + "?" : "Whose share is this?"}</div>
+      <div class="sub" style="margin:4px 0 8px">${esc(g.detail || "")}</div>
+      ${g.items.map((y) => `<button class="btn" data-sug="${y.id}" data-yes="1" style="margin:0 0 8px">${one ? "Yes, received" : esc(y.title)}</button>`).join("")}
+      <button class="btn ghost" data-sugno="${g.items.map((y) => y.id).join(",")}" style="margin:0">${one ? "No, not this" : "None of these"}</button></div>`;
+  }).join("");
+  el.querySelectorAll("[data-sug]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    const { error } = await db.rpc("bank_match_answer", { p_match: b.dataset.sug, p_yes: true });
+    if (error) { b.disabled = false; return alert("Couldn't save: " + error.message); }
+    loadBoard();
+  }));
+  el.querySelectorAll("[data-sugno]").forEach((b) => b.addEventListener("click", async () => {
+    b.disabled = true;
+    for (const id of b.dataset.sugno.split(",")) await db.rpc("bank_match_answer", { p_match: id, p_yes: false });
+    loadBoard();
+  }));
 }
 async function openBankAccount(a) {
   $("tab-board").innerHTML = `<h2>${esc(acctLabel(a))}</h2><div class="card"><div class="sub">Balance</div><div class="big">${money(a.balance)}</div>
