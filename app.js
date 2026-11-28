@@ -1161,13 +1161,16 @@ async function fillBankBox() {
 async function fillBankSuggestions() {
   const el = $("bankSugs");
   if (!el) return;
-  const [{ data }, { data: rec }] = await Promise.all([
+  const [{ data }, { data: rec }, { data: low }] = await Promise.all([
     db.from("bank_matches").select("id,kind,title,detail,account_id,tx_id,posted").eq("status", "new").order("posted", { ascending: false }).limit(20),
     // P41: regular charges that aren't bills yet, and ones whose price just went up
     db.from("bank_recurring").select("id,name,cadence,amount,prev_amount,day_of_month,next_date,known_bill,status,price_up_seen")
       .or("and(status.eq.new,known_bill.eq.false),price_up_seen.eq.false").order("amount", { ascending: false }).limit(8),
+    // P42: is the next week's bills more than the spending money? (worked out after each bank check)
+    db.from("low_balance").select("short,detail,updated_at").eq("member_id", me.id).maybeSingle(),
   ]);
-  if (!data?.length && !rec?.length) return (el.innerHTML = "");
+  const lowOn = low && Number(low.short) > 0 && Date.now() - new Date(low.updated_at).getTime() < 36 * 3600000;
+  if (!data?.length && !rec?.length && !lowOn) return (el.innerHTML = "");
   const groups = [];
   const byTx = {};
   for (const x of data) {
@@ -1189,7 +1192,11 @@ async function fillBankSuggestions() {
       <button class="btn" data-recadd="${r.id}" data-house="0" style="margin:0 0 8px">Add as my bill</button>
       ${canManage() ? `<button class="btn ghost" data-recadd="${r.id}" data-house="1" style="margin:0 0 8px">Add as a household bill</button>` : ""}
       <button class="btn ghost" data-recno="${r.id}" style="margin:0">Not a bill</button></div>`).join("");
-  el.innerHTML = `<h2>From your bank</h2>` + recHtml + groups.slice(0, 6).map((g) => {
+  const lowHtml = lowOn ? `<div class="card" style="border:1px solid var(--red);background:rgba(255,90,90,.08)">
+      <div style="font-weight:700;color:var(--red)">Heads up: ${money(low.short)} short this week</div>
+      <div class="sub" style="margin:4px 0 0">${esc(low.detail || "")}</div>
+      <div class="sub" style="margin:6px 0 0">Checked ${esc(agoText(low.updated_at))}. Money people owe you for shares isn't counted until it comes in.</div></div>` : "";
+  el.innerHTML = `<h2>From your bank</h2>` + lowHtml + recHtml + groups.slice(0, 6).map((g) => {
     if (g.kind === "bill_paid") {
       const x = g.items[0];
       return `<div class="card" style="border:1px solid var(--accent)"><div style="font-weight:600">${esc(x.title)} — mark it paid?</div>
