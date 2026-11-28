@@ -114,7 +114,7 @@ async function loadBoard() {
   const [shares, mine, toConfirm, events] = await Promise.all([
     db.from("bill_share_amounts").select("id,bill_id,bill_name,bill_amount,share_amount,paid,paid_method,confirmed,due_date,member_id").eq("member_id", me.id)
       .lte("due_date", in30).or(windowFilter).order("due_date"),
-    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number,autopay,pay_note").eq("owner_id", me.id)
+    db.from("bills").select("id,name,amount,due_date,paid,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number,autopay,pay_note,priority").eq("owner_id", me.id)
       .lte("due_date", in30).or(windowFilter).order("due_date"),
     canManage()
       ? db.from("bill_share_amounts").select("id,bill_name,share_amount,paid_method,paid_on,due_date,member_id").eq("paid", true).eq("confirmed", false).neq("member_id", me.id).order("due_date")
@@ -128,7 +128,7 @@ async function loadBoard() {
   // logos + repeat info for the household bills behind my shares
   const billIds = [...new Set((shares.data || []).map((s) => s.bill_id))];
   const { data: shareBills } = billIds.length
-    ? await db.from("bills").select("id,amount,paid,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number,autopay,pay_note").in("id", billIds)
+    ? await db.from("bills").select("id,amount,paid,logo_url,website,repeat_kind,repeat_days,full_images,admin_id,pay_url,account_number,autopay,pay_note,priority").in("id", billIds)
     : { data: [] };
   const billInfo = Object.fromEntries((shareBills || []).map((b) => [b.id, b]));
   // P35: everyone's shares on those bills, so the person being paid sees how much has come in
@@ -232,7 +232,7 @@ function walletCard(i, k, step) {
   const logo = i.info.logo_url
     ? `<div class="wlogo" style="background-image:url('${esc(i.info.logo_url)}')"></div>`
     : `<div class="wlogo" style="background-color:${fg};color:${bg}">${esc(i.name.slice(0, 1).toUpperCase())}</div>`;
-  const sub = [i.kind === "household" ? "Household" : i.kind === "private" ? "🔒 Private" : "Personal", repeatLabel(i.info), i.info?.autopay ? "Autopay" : ""].filter(Boolean).join(" · ");
+  const sub = [i.kind === "household" ? "Household" : i.kind === "private" ? "🔒 Private" : "Personal", repeatLabel(i.info), i.info?.autopay ? "Autopay" : "", i.info?.priority === "must" ? "Must have" : i.info?.priority === "want" ? "Want" : ""].filter(Boolean).join(" · ");
   const many = i.group && i.group.length > 1;
   let pill = i.kind === "household" ? `Total due ${money(i.billAmount)}` : "Tap to mark paid";
   if (i.kind === "household" && i.paid) pill = "Bill not paid yet";
@@ -700,7 +700,7 @@ function payBox(info) {
 }
 
 // ---------- open any bill from anywhere (P25) ----------
-const BILL_FIELDS = "id,name,amount,due_date,paid,owner_id,admin_id,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,pay_url,account_number,autopay,pay_note";
+const BILL_FIELDS = "id,name,amount,due_date,paid,owner_id,admin_id,show_on_board,logo_url,website,repeat_kind,repeat_days,full_images,pay_url,account_number,autopay,pay_note,priority";
 async function openBillById(id) {
   const { data: b } = await db.from("bills").select(BILL_FIELDS).eq("id", id).maybeSingle();
   if (!b) return;
@@ -1466,8 +1466,9 @@ async function paintBank() {
       <div class="row" style="gap:8px"><button class="btn" data-joint="${esc(a.id)}" data-partner="${partner.id}" style="margin:0">Yes, joint</button>
       <button class="btn ghost" data-notjoint="${esc(a.id)}" style="margin:0">No, just ${esc(people[a.owner_id].display_name)}'s</button></div></div>`;
   }).join("");
-  const bankTotal = editable.reduce((t, a) => t + Number(a.balance || 0), 0);
-  if ($("bankLine")) $("bankLine").textContent = editable.length ? `${editable.length} account${editable.length === 1 ? "" : "s"} · ${money(bankTotal)} · shared money` : "Link your bank · shared money";
+  const shown = editable.filter((a) => !a.hidden);
+  const bankTotal = shown.reduce((t, a) => t + Number(a.balance || 0), 0);
+  if ($("bankLine")) $("bankLine").textContent = editable.length ? `${shown.length} account${shown.length === 1 ? "" : "s"} · ${money(bankTotal)} · shared money` : "Link your bank · shared money";
   $("bankAccts").innerHTML = askHtml + editable.map((a) => `<details class="acct" style="border-top:1px solid rgba(255,255,255,.08);margin-top:6px">
       <summary><div class="grow" style="font-weight:600">${esc(acctLabel(a))}</div><b>${money(a.balance)}</b><span class="chev" style="font-size:20px">›</span></summary>
       <div class="split-row" style="grid-template-columns:1fr 1fr;margin-top:6px">
@@ -1623,16 +1624,20 @@ $("removePhoto").addEventListener("click", async () => {
 const canManage = () => member?.role === "admin" || member?.bill_manager === true;
 let editing = null; // bill being edited, or {} for new
 
+let billPrFilter = "all";
+let billTap = { id: null, t: 0, timer: null };
+const openCards = new Set();
+const prTag = (b) => b?.priority === "must" ? `<span class="ptag must">Must have</span>` : b?.priority === "want" ? `<span class="ptag want">Want</span>` : "";
 async function loadBills() {
   $("billEditor").classList.add("hidden");
   $("billsList").classList.remove("hidden");
   const monthStart = localISO().slice(0, 8) + "01";
   const ago60 = localISO(new Date(Date.now() - 60 * 86400000));
   const [bills, shares, sample, mine, helps] = await Promise.all([
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images,admin_id,pay_url,account_number,autopay,pay_note").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,split_method,website,logo_url,paid,next_bill_id,full_images,admin_id,pay_url,account_number,autopay,pay_note,priority").is("owner_id", null).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     db.from("bill_shares").select("id,bill_id,member_id,percent,fixed_amount,paid,paid_method,paid_on,confirmed"),
     db.from("bills").select("id", { count: "exact", head: true }).eq("notes", "SAMPLE"),
-    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images,admin_id,pay_url,account_number,autopay,pay_note").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
+    db.from("bills").select("id,name,amount,due_date,repeat_kind,repeat_days,website,logo_url,paid,next_bill_id,owner_id,show_on_board,full_images,admin_id,pay_url,account_number,autopay,pay_note,priority").eq("owner_id", me.id).or(`due_date.gte.${monthStart},paid.eq.false`).order("due_date"),
     // P30: money people sent toward personal bills (I only see ones to me / on my bills / from me)
     db.from("bill_payments").select("id,bill_id,from_member,to_member,amount,method,sent_on,confirmed,bills(name,owner_id)").gte("sent_on", ago60).order("created_at"),
   ]);
@@ -1647,23 +1652,31 @@ async function loadBills() {
   };
   const byBill = {};
   (shares.data || []).forEach((s) => (byBill[s.bill_id] ??= []).push(s));
-  let html = `<h2>Household bills</h2>`;
+  // P46: filter by how important a bill is
+  const prOk = (b) => billPrFilter === "all" || (b.priority || "need") === billPrFilter;
+  let html = `<div class="row" style="gap:8px;flex-wrap:wrap;margin-bottom:4px">${[["all", "All"], ["must", "Must have"], ["need", "Need"], ["want", "Want"]].map(([k, t]) =>
+    `<button type="button" class="chip" data-prf="${k}" style="border:0;min-height:32px;${billPrFilter === k ? "background:var(--accent);color:#04121f" : ""}">${t}</button>`).join("")}</div>`;
+  html += `<h2>Household bills</h2>`;
   if (canManage()) html += `<button class="btn" id="newBill" style="margin:0 0 12px">+ Add a household bill</button>`;
-  const rows = bills.data || [];
+  const rows = (bills.data || []).filter(prOk);
   // unpaid bills whose due date has passed (any month) go in their own group at the top
   const pastDue = rows.filter((b) => !b.paid && daysUntil(b.due_date) < 0);
   const current = rows.filter((b) => !pastDue.includes(b));
+  // P46: small cards - one tap shows who's paid, a double tap opens the bill
   const billRow = (b) => {
     const who = (byBill[b.id] || []).map((s) => people[s.member_id]?.display_name).filter(Boolean);
     const d = daysUntil(b.due_date);
     const cls = b.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
-    return `<div class="card row" ${canManage() ? `data-edit="${b.id}" style="cursor:pointer"` : ""}>
-      ${logoTile(b)}
-      <div class="grow"><div class="name">${esc(b.name)}</div>
-      <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${repeatLabel(b) ? " · " + repeatLabel(b) : ""}</div>
-      <div class="sub">${!who.length ? "Not split yet" : canManage() ? `${(byBill[b.id] || []).filter((s) => s.paid).length} of ${who.length} paid` : "Split: " + esc(who.join(", ")) + ` · ${(byBill[b.id] || []).filter((s) => s.paid).length} of ${who.length} paid`}</div>
-      ${canManage() ? receivedLines(b) : ""}</div>
-      <div class="amt">${money(b.amount)}</div></div>`;
+    const paidN = (byBill[b.id] || []).filter((s) => s.paid).length;
+    return `<div class="card bcard" data-bc="${b.id}" data-bk="h" style="cursor:pointer;padding:12px 14px">
+      <div class="row">${logoTile(b)}
+      <div class="grow"><div class="name">${esc(b.name)}${prTag(b)}</div>
+      <div class="sub ${cls}" style="margin:0">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${who.length ? ` · ${paidN} of ${who.length} paid` : ""}</div></div>
+      <div class="amt">${money(b.amount)}</div></div>
+      <div class="bdetail${openCards.has(b.id) ? "" : " hidden"}">
+      <div class="sub" style="margin-top:6px">${repeatLabel(b) ? repeatLabel(b) + " · " : ""}${!who.length ? "Not split yet" : "Split: " + esc(who.join(", "))}</div>
+      ${canManage() ? receivedLines(b) : ""}
+      ${canManage() ? `<div class="sub" style="margin-top:6px">Double-tap to open the bill.</div>` : ""}</div></div>`;
   };
   // P29: the bill administrator sees, per person, whether their share came in (and can confirm it right here)
   const receivedLines = (b) => {
@@ -1693,15 +1706,15 @@ async function loadBills() {
     g.sort((a, b) => a.due_date.localeCompare(b.due_date));
     const total = g.reduce((t, b) => t + Number(b.amount || 0), 0);
     const late = daysUntil(g[0].due_date) < 0;
-    return `<div class="card"><div class="row">${logoTile(g[0])}<div class="grow"><div class="name">${esc(g[0].name)}</div>
-      <div class="sub ${late ? "late" : "soon"}">${g.length} unpaid · oldest ${esc(dueLabel(g[0].due_date))}</div></div>
-      <div class="amt">${money(total)}</div></div>` +
+    return `<div class="card bcard" data-bc="${g[0].id}" data-bk="h" style="cursor:pointer;padding:12px 14px"><div class="row">${logoTile(g[0])}<div class="grow"><div class="name">${esc(g[0].name)}${prTag(g[0])}</div>
+      <div class="sub ${late ? "late" : "soon"}" style="margin:0">${g.length} unpaid · oldest ${esc(dueLabel(g[0].due_date))}</div></div>
+      <div class="amt">${money(total)}</div></div><div class="bdetail${openCards.has(g[0].id) ? "" : " hidden"}">` +
       g.map((b) => {
         const who = (byBill[b.id] || []).filter((x) => people[x.member_id]);
         return `<div ${canManage() ? `data-edit="${b.id}" style="cursor:pointer;` : `style="`}border-top:1px solid rgba(255,255,255,.08);margin-top:10px;padding-top:8px">
           <div class="row"><div class="grow sub ${daysUntil(b.due_date) < 0 ? "late" : ""}" style="margin:0">${esc(dueLabel(b.due_date))}${who.length ? ` · ${who.filter((x) => x.paid).length} of ${who.length} paid` : ""}</div><b>${money(b.amount)}</b></div>
           ${canManage() ? receivedLines(b) : ""}</div>`;
-      }).join("") + `</div>`;
+      }).join("") + `</div></div>`;
   };
   const entries = [];
   rows.filter((b) => !inGroup.has(b.id)).forEach((b) => entries.push({ due: b.due_date, late: !b.paid && daysUntil(b.due_date) < 0, html: () => billRow(b) }));
@@ -1713,18 +1726,20 @@ async function loadBills() {
   if (canManage()) html += `<p class="sub center">Tap a bill to edit it.</p>`;
 
   // ---- my own bills (P11) ----
-  const myRows = mine.data || [];
+  const myRows = (mine.data || []).filter(prOk);
   html += `<h2>My bills</h2><button class="btn ghost" id="newMine" style="margin:0 0 12px">+ Add a personal bill</button>`;
   html += myRows.length ? myRows.map((b) => {
     const d = daysUntil(b.due_date);
     const cls = b.paid ? "paid" : d < 0 ? "late" : d <= 7 ? "soon" : "";
-    return `<div class="card row" data-mine="${b.id}" style="cursor:pointer">
-      ${logoTile(b)}
-      <div class="grow"><div class="name">${esc(b.name)}</div>
-      <div class="sub ${cls}">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${repeatLabel(b) ? " · " + repeatLabel(b) : ""}</div>
-      <div class="sub">${b.show_on_board ? "On the family board" : "🔒 Private — only you see this"}</div>
-      ${(helpsByBill[b.id] || []).length ? `<div style="margin-top:6px"><div class="sub" style="margin:0">Payments received</div>${helpsByBill[b.id].map(helpLine).join("")}</div>` : ""}</div>
-      <div class="amt">${money(b.amount)}</div></div>`;
+    return `<div class="card bcard" data-bc="${b.id}" data-bk="p" style="cursor:pointer;padding:12px 14px">
+      <div class="row">${logoTile(b)}
+      <div class="grow"><div class="name">${esc(b.name)}${prTag(b)}</div>
+      <div class="sub ${cls}" style="margin:0">${b.paid ? "Paid ✓" : dueLabel(b.due_date)}${(helpsByBill[b.id] || []).length ? " · payments received" : ""}</div></div>
+      <div class="amt">${money(b.amount)}</div></div>
+      <div class="bdetail${openCards.has(b.id) ? "" : " hidden"}">
+      <div class="sub" style="margin-top:6px">${repeatLabel(b) ? repeatLabel(b) + " · " : ""}${b.show_on_board ? "On the family board" : "🔒 Private — only you see this"}</div>
+      ${(helpsByBill[b.id] || []).length ? `<div style="margin-top:6px"><div class="sub" style="margin:0">Payments received</div>${helpsByBill[b.id].map(helpLine).join("")}</div>` : ""}
+      <div class="sub" style="margin-top:6px">Double-tap to open the bill.</div></div></div>`;
   }).join("") : `<div class="card sub">No personal bills yet. Add things only you pay (phone, car, card…).</div>`;
   // P30: help sent to me for someone else's bill (I'm that bill's administrator)
   const toMe = (helps.data || []).filter((p) => p.to_member === me.id && p.bills?.owner_id !== me.id && p.from_member !== me.id);
@@ -1735,9 +1750,26 @@ async function loadBills() {
   $("billsList").innerHTML = html;
   $("newBill")?.addEventListener("click", () => openEditor({}, []));
   $("newMine").addEventListener("click", () => openEditor({ owner_id: me.id, show_on_board: true }, []));
-  document.querySelectorAll("[data-mine]").forEach((el) => el.addEventListener("click", () => {
-    openEditor(myRows.find((r) => r.id === el.dataset.mine), []);
+  // P46: one tap = show/hide details, double tap = open the bill
+  document.querySelectorAll("[data-bc]").forEach((el) => el.addEventListener("click", (e) => {
+    if (e.target.closest("button,a,select,input,[data-edit],[data-recv],[data-helpok]")) return;
+    const id = el.dataset.bc, now = Date.now();
+    if (billTap.id === id && now - billTap.t < 350) {
+      clearTimeout(billTap.timer);
+      billTap = { id: null, t: 0, timer: null };
+      if (el.dataset.bk === "p") openEditor(myRows.find((r) => r.id === id), []);
+      else if (canManage()) { const b = rows.find((r) => r.id === id); if (b) openEditor(b, byBill[b.id] || []); }
+      return;
+    }
+    clearTimeout(billTap.timer);
+    billTap = { id, t: now, timer: setTimeout(() => {
+      const d = el.querySelector(".bdetail");
+      if (!d) return;
+      d.classList.toggle("hidden");
+      if (d.classList.contains("hidden")) openCards.delete(id); else openCards.add(id);
+    }, 300) };
   }));
+  document.querySelectorAll("[data-prf]").forEach((c) => c.addEventListener("click", () => { billPrFilter = c.dataset.prf; loadBills(); }));
   document.querySelectorAll("[data-helpok]").forEach((el) => el.addEventListener("click", async (e) => {
     e.stopPropagation();
     el.disabled = true; el.textContent = "Saving…";
@@ -1799,6 +1831,7 @@ function openEditor(bill, shares) {
   $("bPayUrl").value = bill.pay_url ?? "";
   $("bAcct").value = bill.account_number ?? "";
   $("bAutopay").value = bill.autopay ? "auto" : "company";
+  $("bPriority").value = bill.priority ?? "need";
   $("bPayNote").value = bill.pay_note ?? "";
   logoUrl = bill.logo_url ?? null;
   paintLogo();
@@ -2085,7 +2118,7 @@ $("saveBill").addEventListener("click", async () => {
   if (repeat_kind === "days" && !(repeat_days >= 1 && repeat_days <= 365)) return ($("billErr").textContent = "Enter how many days between bills (1 to 365).");
   const fields = { name, amount, due_date: due, repeat_kind, repeat_days, split_method: method, website: site || null, logo_url: logoUrl, owner_id: null, admin_id: $("bAdmin").value || null,
     pay_url: normUrl($("bPayUrl").value), account_number: $("bAcct").value.trim() || null,
-    autopay: $("bAutopay").value === "auto", pay_note: $("bPayNote").value.trim() || null };
+    autopay: $("bAutopay").value === "auto", pay_note: $("bPayNote").value.trim() || null, priority: $("bPriority").value };
   if (personal) Object.assign(fields, { owner_id: me.id, show_on_board: $("bShow").checked, split_method: "equal" });
   let billId = editing.id;
   if (billId) {

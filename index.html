@@ -19,6 +19,11 @@
   .avatar { width:40px; height:40px; border-radius:20px; display:flex; align-items:center; justify-content:center; font-weight:700; color:#101216; border:0; font-size:16px; }
   .card { background: var(--panel); border-radius: 16px; padding: 16px; margin-bottom: 10px; }
   .drawer { background: var(--panel); border-radius: 16px; margin-bottom: 10px; }
+  .ptag { font-size: 11px; font-weight: 700; padding: 1px 7px; border-radius: 8px; margin-left: 8px; vertical-align: 2px; }
+  .ptag.must { background: rgba(255,90,90,.18); color: #FF8A80; }
+  .ptag.want { background: rgba(242,193,78,.18); color: #F2C14E; }
+  .bcard .logo { width: 40px; height: 40px; }
+
   .drawer > summary { list-style: none; display: flex; align-items: center; gap: 14px; padding: 14px 16px; cursor: pointer; }
   .drawer > summary::-webkit-details-marker { display: none; }
   .drawer .dtitle { font-weight: 700; font-size: 17px; }
@@ -181,6 +186,12 @@
           <option value="company">Pay the company (online, mail, phone)</option>
           <option value="auto">Autopay — pay the bill administrator instead</option>
         </select>
+        <label for="bPriority">How important is this bill?</label>
+        <select id="bPriority">
+          <option value="must">Must have (house, power, insurance…)</option>
+          <option value="need">Need</option>
+          <option value="want">Want (could go when money is tight)</option>
+        </select>
         <label for="bPayNote">Payment note (optional, shown big on the TV and phone)</label>
         <input id="bPayNote" maxlength="200" placeholder="Autopay on the 1st from our checking — send Mike your share">
         <label>Logo</label>
@@ -328,7 +339,7 @@
         </div>
       </div>
     </details>
-    <p class="sub center" style="margin-top:24px">Family Board phone app · version P45</p>
+    <p class="sub center" style="margin-top:24px">Family Board phone app · version P46</p>
   </main>
 
   <div id="viewer" class="hidden"></div>
@@ -340,6 +351,6 @@
   </nav>
 </section>
 
-<script type="module" src="app.js?v=P45"></script>
+<script type="module" src="app.js?v=P46"></script>
 </body>
 </html>
