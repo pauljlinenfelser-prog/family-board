@@ -481,7 +481,8 @@ async function openAllEvents() {
 let photoRows = [];
 async function signPhotos(rows) {
   if (!rows.length) return {};
-  const { data } = await db.storage.from("family-photos").createSignedUrls(rows.map((r) => r.path), 3600);
+  const paths = rows.flatMap((r) => [r.path, r.thumb_path].filter(Boolean));
+  const { data } = await db.storage.from("family-photos").createSignedUrls(paths, 3600);
   return Object.fromEntries((data || []).filter((d) => d.signedUrl).map((d) => [d.path, d.signedUrl]));
 }
 // P47: Home just shows the album button with a count
@@ -489,7 +490,7 @@ async function fillHomePhotos() {
   const { count, data } = await db.from("photos").select("created_at", { count: "exact" }).eq("purpose", "family").order("created_at", { ascending: false }).limit(1);
   const el = $("homePhotos");
   if (!el) return;
-  el.textContent = count ? `${count} family photo${count === 1 ? "" : "s"} · newest ${agoText(data?.[0]?.created_at)}` : "No photos yet - tap + Add";
+  el.textContent = count ? `${count} photos & videos · newest ${agoText(data?.[0]?.created_at)}` : "No photos yet - tap + Add";
 }
 async function openAllPhotos() {
   $("tab-board").innerHTML = `<h2 class="row" style="justify-content:space-between">Family photos <a href="#" data-addph="family" class="hlink">+ Add</a></h2><div id="allPhotos" class="phgrid"><div class="sub">Loading…</div></div>
@@ -498,11 +499,20 @@ async function openAllPhotos() {
     <div id="bgPhotos" class="phgrid" style="margin-top:8px"></div><button class="btn ghost" data-back="1">Back</button>`;
   window.scrollTo(0, 0);
   $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
-  const { data } = await db.from("photos").select("id,path,caption,taken_on,show_on_board,uploaded_by,created_at,purpose").order("created_at", { ascending: false }).limit(300);
+  const { data } = await db.from("photos").select("id,path,caption,taken_on,show_on_board,uploaded_by,created_at,purpose,kind,thumb_path,duration_s").order("created_at", { ascending: false }).limit(300);
   const rows = data || [];
   const urls = await signPhotos(rows);
-  photoRows = rows.map((r) => ({ ...r, url: urls[r.path] }));
-  const tile = (r) => `<button class="ph" data-ph="${r.id}" style="background-image:url('${esc(r.url ?? "")}')">${r.show_on_board ? "" : `<span class="phtag">Not on TV</span>`}</button>`;
+  photoRows = rows.map((r) => ({ ...r, url: urls[r.path], thumb: r.thumb_path ? urls[r.thumb_path] : null }));
+  // P50: videos show their preview picture with a play mark
+  const tile = (r) => `<button class="ph" data-ph="${r.id}" style="background-image:url('${esc((r.kind === "video" ? r.thumb : r.url) ?? "")}')">${r.kind === "video" ? `<span class="phplay">▶${r.duration_s ? " " + r.duration_s + "s" : ""}</span>` : ""}${r.show_on_board ? "" : `<span class="phtag">Not on TV</span>`}</button>`;
+  db.rpc("storage_used_mb").then(({ data: mb }) => {
+    if (mb == null || !$("allPhotos")) return;
+    const note = document.createElement("div");
+    note.className = "sub";
+    note.style.margin = "10px 0 0";
+    note.textContent = `Storage used: ${mb} MB of 1,000 MB (photos, videos and bill pages). Videos: up to 60 seconds each.`;
+    $("allPhotos").insertAdjacentElement("afterend", note);
+  });
   const fam = photoRows.filter((r) => r.purpose !== "background"), bgs = photoRows.filter((r) => r.purpose === "background");
   $("allPhotos").innerHTML = fam.length ? fam.map(tile).join("") : `<div class="card sub center" style="grid-column:1/-1">No photos yet.</div>`;
   $("bgPhotos").innerHTML = bgs.length ? bgs.map(tile).join("") : `<div class="card sub center" style="grid-column:1/-1">No backgrounds yet. Any family photo can be a background too.</div>`;
@@ -510,7 +520,9 @@ async function openAllPhotos() {
 function openPhoto(r) {
   const mineOrAdmin = r.uploaded_by === me.id || member?.role === "admin";
   const by = people[r.uploaded_by]?.display_name ?? "Someone";
-  let h = `<div class="card" style="padding:10px"><img src="${esc(r.url ?? "")}" alt="" style="width:100%;border-radius:12px;display:block">
+  let h = `<div class="card" style="padding:10px">${r.kind === "video"
+      ? `<video src="${esc(r.url ?? "")}" ${r.thumb ? `poster="${esc(r.thumb)}"` : ""} controls playsinline style="width:100%;border-radius:12px;display:block;background:#000"></video>`
+      : `<img src="${esc(r.url ?? "")}" alt="" style="width:100%;border-radius:12px;display:block">`}
     <div class="sub" style="margin:10px 4px 0">${r.caption ? esc(r.caption) + " · " : ""}Added by ${esc(by)} · ${fmtDate(localISO(new Date(r.created_at)))}</div></div>`;
   if (mineOrAdmin) {
     h += `<label for="phCap">Caption</label><input id="phCap" maxlength="80" value="${esc(r.caption ?? "")}" placeholder="Lake trip, Brock's first deer…">
@@ -529,10 +541,10 @@ function openPhoto(r) {
     openAllPhotos();
   });
   $("phDel")?.addEventListener("click", async () => {
-    if (!confirm("Delete this photo for everyone? This can't be undone.")) return;
+    if (!confirm(`Delete this ${r.kind === "video" ? "video" : "photo"} for everyone? This can't be undone.`)) return;
     const { error } = await db.from("photos").delete().eq("id", r.id);
     if (error) return ($("phErr").textContent = "Couldn't delete: " + error.message);
-    await db.storage.from("family-photos").remove([r.path]);
+    await db.storage.from("family-photos").remove([r.path, r.thumb_path].filter(Boolean));
     openAllPhotos();
   });
 }
@@ -553,7 +565,27 @@ function scaledJpeg(file, max = 1920) {
   });
 }
 let pickPurpose = "family";
-const photoPicker = Object.assign(document.createElement("input"), { type: "file", accept: "image/*", multiple: true });
+const photoPicker = Object.assign(document.createElement("input"), { type: "file", accept: "image/*,video/*", multiple: true });
+// P50: a video's length and a preview picture from its first moments
+function videoInfo(file) {
+  return new Promise((resolve, reject) => {
+    const v = document.createElement("video");
+    v.preload = "metadata"; v.muted = true; v.playsInline = true;
+    const url = URL.createObjectURL(file);
+    const fail = () => { URL.revokeObjectURL(url); reject(new Error("Couldn't read that video")); };
+    v.onerror = fail;
+    v.onloadedmetadata = () => { v.currentTime = Math.min(0.5, (v.duration || 1) / 2); };
+    v.onseeked = () => {
+      const k = Math.min(1, 640 / Math.max(v.videoWidth || 640, v.videoHeight || 640));
+      const c = document.createElement("canvas");
+      c.width = Math.round((v.videoWidth || 640) * k); c.height = Math.round((v.videoHeight || 360) * k);
+      c.getContext("2d").drawImage(v, 0, 0, c.width, c.height);
+      c.toBlob((b) => { URL.revokeObjectURL(url); resolve({ duration: v.duration, thumb: b }); }, "image/jpeg", 0.8);
+    };
+    setTimeout(fail, 20000);
+    v.src = url;
+  });
+}
 photoPicker.style.display = "none";
 document.body.appendChild(photoPicker);
 photoPicker.addEventListener("change", async () => {
@@ -562,19 +594,41 @@ photoPicker.addEventListener("change", async () => {
   if (!files.length) return;
   const status = (t) => { const el = $("allPhotos") || $("homePhotos"); if (el) el.innerHTML = el.id === "homePhotos" ? esc(t) : `<div class="sub" style="grid-column:1/-1">${esc(t)}</div>`; };
   let done = 0, failed = 0;
+  const why = [];
   for (const f of files) {
     status(`Uploading ${done + failed + 1} of ${files.length}…`);
+    if (String(f.type).startsWith("video/")) {
+      try {
+        if (f.size > 50 * 1048576) throw new Error(`${f.name}: too big (${Math.round(f.size / 1048576)} MB - the limit is 50 MB)`);
+        const info = await videoInfo(f);
+        if (info.duration > 61) throw new Error(`${f.name}: ${Math.round(info.duration)} seconds - videos can be up to 60 seconds`);
+        const ext = /quicktime|mov/i.test(f.type + f.name) ? "mov" : "mp4";
+        const stem = `${me.id}/photos/${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        const up = await db.storage.from("family-photos").upload(`${stem}.${ext}`, f, { contentType: ext === "mov" ? "video/quicktime" : "video/mp4" });
+        if (up.error) throw up.error;
+        let thumbPath = null;
+        if (info.thumb) {
+          const t = await db.storage.from("family-photos").upload(`${stem}-thumb.jpg`, info.thumb, { contentType: "image/jpeg" });
+          if (!t.error) thumbPath = `${stem}-thumb.jpg`;
+        }
+        const { error } = await db.from("photos").insert({ path: `${stem}.${ext}`, uploaded_by: me.id, purpose: "family", kind: "video", thumb_path: thumbPath,
+          duration_s: Math.round(info.duration), bytes: f.size, taken_on: f.lastModified ? localISO(new Date(f.lastModified)) : null });
+        if (error) { await db.storage.from("family-photos").remove([`${stem}.${ext}`, thumbPath].filter(Boolean)); throw error; }
+        done++;
+      } catch (e) { failed++; why.push(e?.message || String(e)); }
+      continue;
+    }
     try {
       const blob = await scaledJpeg(f);
       const path = `${me.id}/photos/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.jpg`;
       const up = await db.storage.from("family-photos").upload(path, blob, { contentType: "image/jpeg" });
       if (up.error) throw up.error;
-      const { error } = await db.from("photos").insert({ path, uploaded_by: me.id, purpose: pickPurpose, taken_on: f.lastModified ? localISO(new Date(f.lastModified)) : null });
+      const { error } = await db.from("photos").insert({ path, uploaded_by: me.id, purpose: pickPurpose, bytes: blob.size, taken_on: f.lastModified ? localISO(new Date(f.lastModified)) : null });
       if (error) { await db.storage.from("family-photos").remove([path]); throw error; }
       done++;
     } catch { failed++; }
   }
-  if (failed) alert(`${done} uploaded, ${failed} couldn't be read. (Some iPhone photos need "Most Compatible" camera format.)`);
+  if (failed) alert(`${done} uploaded, ${failed} didn't work.` + (why.length ? "\n\n" + why.join("\n") : "") + `\n\n(Some iPhone photos need "Most Compatible" camera format.)`);
   if ($("allPhotos")) openAllPhotos(); else loadBoard();
 });
 
