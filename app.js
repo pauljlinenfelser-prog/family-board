@@ -146,12 +146,17 @@ async function loadBoard() {
     </div>`;
 
   // ---- wallet: my unpaid bills as stacked cards, oldest first ----
-  const cards = open.slice(0, 8).reverse(); // most urgent ends up in front
+  // P34: late + current copies of the same bill share one card (oldest first, total owed)
+  const groupsByKey = {};
+  for (const i of open) (groupsByKey[groupKey(i)] ??= []).push(i);
+  const heads = Object.values(groupsByKey).map((g) => { g.sort((a, b) => a.due.localeCompare(b.due)); g[0].group = g; return g[0]; })
+    .sort((a, b) => a.due.localeCompare(b.due));
+  const cards = heads.slice(0, 8).reverse(); // most urgent ends up in front
   if (cards.length) {
     const step = 58, h = 176;
     html += `<div class="wallet" style="height:${(cards.length - 1) * step + h}px">` + cards.map((i, k) => walletCard(i, k, step)).join("") + `</div>`;
     html += `<p class="sub center">Tap a card to bring it forward. Tap it again to pay or mark it paid.</p>`;
-    if (open.length > cards.length) html += `<p class="sub center">+ ${open.length - cards.length} more on the Bills tab</p>`;
+    if (heads.length > cards.length) html += `<p class="sub center">+ ${heads.length - cards.length} more on the Bills tab</p>`;
   } else {
     html += `<div class="card center" style="padding:26px 16px"><div class="big" style="font-size:22px">All paid up ✓</div><div class="sub">Nothing due in the next 30 days.</div></div>`;
   }
@@ -199,6 +204,10 @@ function cardColors(i) {
   let h = 0; for (const c of i.name) h = (h * 31 + c.charCodeAt(0)) >>> 0;
   return CARD_COLORS[h % CARD_COLORS.length];
 }
+// P34: same bill = same name (and same owner for personal bills)
+function groupKey(i) {
+  return (i.kind === "household" ? "h:" : "p:" + (i.bill?.owner_id ?? me.id) + ":") + String(i.name || "").trim().toLowerCase();
+}
 function walletCard(i, k, step) {
   const [bg, fg, soft] = cardColors(i);
   const key = i.shareId ? "s:" + i.shareId : "p:" + i.personalId;
@@ -206,10 +215,12 @@ function walletCard(i, k, step) {
     ? `<div class="wlogo" style="background-image:url('${esc(i.info.logo_url)}')"></div>`
     : `<div class="wlogo" style="background-color:${fg};color:${bg}">${esc(i.name.slice(0, 1).toUpperCase())}</div>`;
   const sub = [i.kind === "household" ? "Household" : i.kind === "private" ? "🔒 Private" : "Personal", repeatLabel(i.info), i.info?.autopay ? "Autopay" : ""].filter(Boolean).join(" · ");
-  const pill = i.kind === "household" ? `Bill ${money(i.billAmount)}` : "Tap to mark paid";
+  const many = i.group && i.group.length > 1;
+  let pill = i.kind === "household" ? `Bill ${money(i.billAmount)}` : "Tap to mark paid";
+  if (many) pill = `${i.group.length} unpaid · total ${money(i.group.reduce((t, x) => t + x.amount, 0))}`;
   return `<div class="wcard" data-card="${key}" style="top:${k * step}px;z-index:${k + 1};background:${bg};color:${fg}">
     <div class="row">${logo}<div class="grow"><div class="name">${esc(i.name)}</div><div style="font-size:12px;color:${soft}">${esc(sub)}</div></div></div>
-    <div class="wamt">${money(i.amount)}${i.kind === "household" ? `<span style="font-size:12px;font-weight:600;color:${soft}"> your share</span>` : ""}</div>
+    <div class="wamt">${money(many ? i.group.reduce((t, x) => t + x.amount, 0) : i.amount)}${i.kind === "household" ? `<span style="font-size:12px;font-weight:600;color:${soft}"> ${many ? "you owe" : "your share"}</span>` : ""}</div>
     <div class="row" style="justify-content:space-between;margin-top:6px"><span style="font-size:13px">${esc(dueLabel(i.due))}</span>
       <span class="wpill" style="background:${fg};color:${bg}">${esc(pill)}</span></div></div>`;
 }
@@ -815,6 +826,9 @@ function openShare(i) {
   } else if (!i.confirmed) {
     h += `<button class="btn ghost" data-pay="undo" style="color:var(--red)">Undo — I haven't paid this yet</button>`;
   }
+  const sibs = boardItems.filter((x) => !x.paid && x !== i && groupKey(x) === groupKey(i)).sort((a, b) => a.due.localeCompare(b.due));
+  if (sibs.length) h += `<div class="card" style="margin-top:12px"><div class="sub" style="margin:0 0 6px">Also unpaid for ${esc(i.name)}</div>` +
+    sibs.map((x) => `<button type="button" class="btn ghost" data-sib="${x.shareId ? "s:" + x.shareId : "p:" + x.personalId}" style="margin-top:6px">${esc(dueLabel(x.due))} · ${money(x.amount)} — open</button>`).join("") + `</div>`;
   const seeAll = iAmPayee || canManage();
   if (seeAll) h += `<div id="sharePeople" style="margin-top:14px"></div>`;
   h += payBox(i.info);
@@ -824,6 +838,10 @@ function openShare(i) {
   window.scrollTo(0, 0);
   $("tab-board").querySelectorAll("[data-pay]").forEach((b) => b.addEventListener("click", () => markShare(i, b.dataset.pay)));
   $("tab-board").querySelector("[data-back]").addEventListener("click", loadBoard);
+  $("tab-board").querySelectorAll("[data-sib]").forEach((b) => b.addEventListener("click", () => {
+    const x = boardItems.find((y) => (y.shareId ? "s:" + y.shareId : "p:" + y.personalId) === b.dataset.sib);
+    if (x) openShare(x);
+  }));
   if (seeAll) paintSharePeople(i);
 }
 
@@ -1258,8 +1276,33 @@ async function loadBills() {
       return `<div style="font-size:14px;margin-top:3px"><b style="color:${esc(p.color)}">${esc(p.display_name)}</b>${lk} ${amt} — ${st}</div>`;
     }).join("") + `</div>`;
   };
-  if (pastDue.length) html += `<h2 class="late">Past due</h2>` + pastDue.map(billRow).join("") + `<h2>This month &amp; coming up</h2>`;
-  html += current.length ? current.map(billRow).join("") : `<div class="card sub">No household bills this month yet.</div>`;
+  // P34: late + current copies of the same bill in one card (total owed, each copy tappable)
+  const nameKey = (b) => String(b.name || "").trim().toLowerCase();
+  const unpaidBy = {};
+  rows.filter((b) => !b.paid).forEach((b) => (unpaidBy[nameKey(b)] ??= []).push(b));
+  const multi = Object.values(unpaidBy).filter((g) => g.length > 1);
+  const inGroup = new Set(multi.flat().map((b) => b.id));
+  const groupRow = (g) => {
+    g.sort((a, b) => a.due_date.localeCompare(b.due_date));
+    const total = g.reduce((t, b) => t + Number(b.amount || 0), 0);
+    const late = daysUntil(g[0].due_date) < 0;
+    return `<div class="card"><div class="row">${logoTile(g[0])}<div class="grow"><div class="name">${esc(g[0].name)}</div>
+      <div class="sub ${late ? "late" : "soon"}">${g.length} unpaid · oldest ${esc(dueLabel(g[0].due_date))}</div></div>
+      <div class="amt">${money(total)}</div></div>` +
+      g.map((b) => {
+        const who = (byBill[b.id] || []).filter((x) => people[x.member_id]);
+        return `<div ${canManage() ? `data-edit="${b.id}" style="cursor:pointer;` : `style="`}border-top:1px solid rgba(255,255,255,.08);margin-top:10px;padding-top:8px">
+          <div class="row"><div class="grow sub ${daysUntil(b.due_date) < 0 ? "late" : ""}" style="margin:0">${esc(dueLabel(b.due_date))}${who.length ? ` · ${who.filter((x) => x.paid).length} of ${who.length} paid` : ""}</div><b>${money(b.amount)}</b></div>
+          ${canManage() ? receivedLines(b) : ""}</div>`;
+      }).join("") + `</div>`;
+  };
+  const entries = [];
+  rows.filter((b) => !inGroup.has(b.id)).forEach((b) => entries.push({ due: b.due_date, late: !b.paid && daysUntil(b.due_date) < 0, html: () => billRow(b) }));
+  multi.forEach((g) => { const first = g.reduce((a, b) => (a.due_date < b.due_date ? a : b)); entries.push({ due: first.due_date, late: daysUntil(first.due_date) < 0, html: () => groupRow(g) }); });
+  entries.sort((a, b) => a.due.localeCompare(b.due));
+  const lateE = entries.filter((e) => e.late), nowE = entries.filter((e) => !e.late);
+  if (lateE.length) html += `<h2 class="late">Past due</h2>` + lateE.map((e) => e.html()).join("") + `<h2>This month &amp; coming up</h2>`;
+  html += nowE.length ? nowE.map((e) => e.html()).join("") : `<div class="card sub">No household bills this month yet.</div>`;
   if (canManage()) html += `<p class="sub center">Tap a bill to edit it.</p>`;
 
   // ---- my own bills (P11) ----

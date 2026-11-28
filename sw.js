@@ -1,7 +1,7 @@
 // Family Board service worker: makes the app installable, loads the shell fast, and shows notifications.
 // Data always comes live from the database; only the app files are cached.
-const CACHE = "familyboard-P33";
-const SHELL = ["./", "index.html", "app.js?v=P33", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
+const CACHE = "familyboard-P34";
+const SHELL = ["./", "index.html", "app.js?v=P34", "manifest.webmanifest", "icon-192.png", "icon-512.png"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: "reload" })))));
